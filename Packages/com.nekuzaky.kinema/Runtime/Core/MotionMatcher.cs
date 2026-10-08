@@ -60,6 +60,9 @@ namespace Kinema.MotionMatching
         private NativeArray<float> _nativeQuery;
         private NativeArray<ulong> _nativeTags;
         private NativeArray<float> _nativePhases;
+        // 1 = the frame may be selected. Everything is searchable until SetClipEndExclusion says otherwise.
+        private NativeArray<byte> _nativeSearchable;
+        private bool _hasExclusions;
         private float _phaseWeight;
         private NativeArray<float> _chunkBestCost;
         private NativeArray<int> _chunkBestFrame;
@@ -88,6 +91,8 @@ namespace Kinema.MotionMatching
                 for (int i = 0; i < _nativePhases.Length; i++) _nativePhases[i] = -1f;
             _chunkBestCost = new NativeArray<float>(_chunkCount, Allocator.Persistent);
             _chunkBestFrame = new NativeArray<int>(_chunkCount, Allocator.Persistent);
+            _nativeSearchable = new NativeArray<byte>(database.FrameCount, Allocator.Persistent);
+            for (int i = 0; i < _nativeSearchable.Length; i++) _nativeSearchable[i] = 1;
 
             UpdateWeights(weights);
         }
@@ -96,6 +101,42 @@ namespace Kinema.MotionMatching
 
         /// <summary>Search strategy. KD-tree is rebuilt lazily after weight changes.</summary>
         public SearchAcceleration Acceleration { get; set; } = SearchAcceleration.BurstLinear;
+
+        /// <summary>Seconds at the end of every non-looping clip that the search never selects.</summary>
+        public float ClipEndExclusion { get; private set; }
+
+        /// <summary>
+        /// Stops the search from selecting the last <paramref name="seconds"/> of every non-looping
+        /// clip (capped at half the clip, so a short clip stays reachable). A frame picked there has
+        /// nowhere to go: the clip clamps at its end and the character holds a frozen pose, with no
+        /// root motion, until some later search finds a way out - and the frame that best matches
+        /// a character standing on the last frame of a clip is usually the last frame of that clip.
+        /// Holden's reference implementation skips the end of every range for the same reason.
+        /// Playback still reaches those frames by continuing; only jumping into them is ruled out.
+        /// 0 = every frame is a candidate (the default, and what the tests' synthetic databases need).
+        /// </summary>
+        public void SetClipEndExclusion(float seconds)
+        {
+            ClipEndExclusion = Mathf.Max(0f, seconds);
+            _hasExclusions = false;
+            for (int f = 0; f < _database.FrameCount; f++)
+            {
+                byte searchable = 1;
+                if (ClipEndExclusion > 0f)
+                {
+                    MotionFrameInfo frame = _database.GetFrame(f);
+                    if (frame.ClipIndex >= 0 && frame.ClipIndex < _database.ClipCount)
+                    {
+                        MotionClipEntry clip = _database.GetClip(frame.ClipIndex);
+                        float window = Mathf.Min(ClipEndExclusion, clip.Length * 0.5f);
+                        if (!clip.IsLooping && clip.Length > 0f && frame.Time > clip.Length - window)
+                            searchable = 0;
+                    }
+                }
+                _nativeSearchable[f] = searchable;
+                _hasExclusions |= searchable == 0;
+            }
+        }
 
         #endregion
 
@@ -123,9 +164,9 @@ namespace Kinema.MotionMatching
             bool phaseActive = _phaseWeight > 0f && query.FootPhase >= 0f && _database.HasFootPhases;
 
             // KD-tree path: exact under the weighted metric, but cannot express tag filters, ignore
-            // ranges or the phase term - use it only when none of those are active.
+            // ranges, clip-end exclusions or the phase term - use it only when none of those are active.
             if (Acceleration == SearchAcceleration.KdTree
-                && requiredTags == 0ul && excludedTags == 0ul && ignoreFrame < 0 && !phaseActive)
+                && requiredTags == 0ul && excludedTags == 0ul && ignoreFrame < 0 && !phaseActive && !_hasExclusions)
             {
                 _kdTree ??= new KdTreeSearch();
                 if (!_kdTree.IsBuilt)
@@ -143,6 +184,7 @@ namespace Kinema.MotionMatching
                 Weights = _nativeWeights,
                 Query = _nativeQuery,
                 Tags = _nativeTags,
+                Searchable = _nativeSearchable,
                 RequiredTags = requiredTags,
                 ExcludedTags = excludedTags,
                 Phases = _nativePhases,
@@ -188,6 +230,7 @@ namespace Kinema.MotionMatching
                 Weights = _nativeWeights,
                 Query = _nativeQuery,
                 Tags = _nativeTags,
+                Searchable = _nativeSearchable,
                 RequiredTags = requiredTags,
                 ExcludedTags = excludedTags,
                 Phases = _nativePhases,
@@ -265,6 +308,7 @@ namespace Kinema.MotionMatching
             _nativeQuery.Dispose();
             _nativeTags.Dispose();
             _nativePhases.Dispose();
+            _nativeSearchable.Dispose();
             _chunkBestCost.Dispose();
             _chunkBestFrame.Dispose();
         }
@@ -291,6 +335,7 @@ namespace Kinema.MotionMatching
             [ReadOnly] public NativeArray<float> Weights;
             [ReadOnly] public NativeArray<float> Query;
             [ReadOnly] public NativeArray<ulong> Tags;
+            [ReadOnly] public NativeArray<byte> Searchable;
             [ReadOnly] public NativeArray<float> Phases;
             public float QueryPhase, PhaseWeight;
             public ulong RequiredTags, ExcludedTags;
@@ -311,6 +356,7 @@ namespace Kinema.MotionMatching
                 for (int f = start; f < end; f++)
                 {
                     if (f >= IgnoreStart && f <= IgnoreEnd) continue;
+                    if (Searchable[f] == 0) continue;
 
                     ulong tags = Tags[f];
                     if ((tags & RequiredTags) != RequiredTags) continue;

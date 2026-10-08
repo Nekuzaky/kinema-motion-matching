@@ -38,7 +38,7 @@ namespace Kinema.MotionMatching
         private void OnEnable()
         {
             if (_controllers == null || _controllers.Length == 0)
-                _controllers = FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None);
+                _controllers = UnityCompat.FindAll<MotionMatchingController>();
             foreach (MotionMatchingController controller in _controllers)
                 if (controller != null) controller.SearchScheduler = this;
         }

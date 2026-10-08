@@ -1153,8 +1153,8 @@ MonoBehaviour:
     RootVelocity: 0.8
   _searchInterval: 0.1
   _jumpImprovementThreshold: 0.02
-  _continuityWindow: 0.12
-  _clipChangeCost: 0.1
+  _continuityWindow: 0.2
+  _clipChangeCost: 0.25
   _transitionMode: 1
   _blendTime: 0.15
   _playbackSpeed: 1

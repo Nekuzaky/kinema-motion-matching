@@ -47,7 +47,7 @@ namespace Kinema.MotionMatching.Samples.Editor
 
         private static PoseRecorder FindRecorderWithTake()
         {
-            foreach (PoseRecorder recorder in Object.FindObjectsByType<PoseRecorder>(FindObjectsSortMode.None))
+            foreach (PoseRecorder recorder in UnityCompat.FindAll<PoseRecorder>())
                 if (recorder.LastTake != null && recorder.LastTake.IsValid)
                     return recorder;
             return null;

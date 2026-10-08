@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This project is a Unity motion matchin
 ## Getting started
 
 1. Fork the repository and clone it locally.
-2. Open the project with Unity 6000.3 or later.
+2. Open the project with Unity 6000.3 or later (the package itself supports Unity 2021.3 LTS and later).
 3. Install the "Locomotion Demo" sample if you want to try the Demo Scene (Tools > Kinema > Demo Scene).
 
 ## Development workflow

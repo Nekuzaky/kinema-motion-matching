@@ -116,7 +116,7 @@ namespace Kinema.MotionMatching.Editor
         /// </summary>
         private static void RetargetReferences(Transform oldTransform, Transform newTransform)
         {
-            foreach (MonoBehaviour behaviour in Object.FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+            foreach (MonoBehaviour behaviour in UnityCompat.FindAll<MonoBehaviour>())
             {
                 if (behaviour == null || behaviour.transform.IsChildOf(newTransform)) continue;
 

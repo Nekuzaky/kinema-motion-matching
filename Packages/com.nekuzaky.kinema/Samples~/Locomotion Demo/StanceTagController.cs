@@ -1,6 +1,5 @@
 using Kinema.MotionMatching;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Kinema.MotionMatching.Samples
 {
@@ -40,7 +39,7 @@ namespace Kinema.MotionMatching.Samples
 
         private MotionMatchingController _controller;
         private CharacterController _characterController;
-        private InputAction _crouchAction;
+        private DemoButton _crouchAction;
         private ulong _crouchMask, _excludedMask;
         private float _standHeight;
         private Vector3 _standCenter;
@@ -60,10 +59,9 @@ namespace Kinema.MotionMatching.Samples
                 _standCenter = _characterController.center;
             }
 
-            _crouchAction = new InputAction("Crouch", InputActionType.Button);
-            _crouchAction.AddBinding("<Keyboard>/c");
-            _crouchAction.AddBinding("<Keyboard>/leftCtrl");
-            _crouchAction.AddBinding("<Gamepad>/buttonEast");
+            _crouchAction = DemoInput.Button("Crouch",
+                new[] { "<Keyboard>/c", "<Keyboard>/leftCtrl", "<Gamepad>/buttonEast" },
+                KeyCode.C, KeyCode.LeftControl, KeyCode.JoystickButton1);
         }
 
         private void OnEnable() => _crouchAction.Enable();

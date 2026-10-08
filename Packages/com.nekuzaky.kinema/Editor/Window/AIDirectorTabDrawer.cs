@@ -31,7 +31,7 @@ namespace Kinema.MotionMatching.Editor
                 return;
             }
 
-            AICommandProvider[] agents = Object.FindObjectsByType<AICommandProvider>(FindObjectsSortMode.None);
+            AICommandProvider[] agents = UnityCompat.FindAll<AICommandProvider>();
             if (agents.Length == 0)
             {
                 MotionMatchingStyles.HelpRow("No AI agents in the scene. An agent is a character with an AICommandProvider and an IAIBrain. Build the Sandbox scene (Tools > Kinema > Scenes > Sandbox) for a ready crowd.", MessageType.Info);
@@ -137,7 +137,7 @@ namespace Kinema.MotionMatching.Editor
 
         private static Transform FindPlayer(AICommandProvider agent)
         {
-            foreach (var c in Object.FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None))
+            foreach (var c in UnityCompat.FindAll<MotionMatchingController>())
                 if (c.GetComponent<AICommandProvider>() == null) return c.transform;
             return null;
         }

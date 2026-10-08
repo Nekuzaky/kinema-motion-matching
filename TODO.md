@@ -89,6 +89,18 @@ largely unjudged. This file tracks what's left, roughly in priority order within
 - [ ] Events and overlay layers have exactly one demonstrated use case each (vault; none for
       overlays). Untested against overlapping events, event-during-event, or multiple concurrent
       overlay layers.
+- [ ] **Judge the v1.44 smoothness fixes on screen.** Inertialization continuity, the jump-frame
+      root-motion stall, wrapped loop trajectories (needs a rebake), the same-clip brake and the
+      foot-lock re-lock are unit tested or compile-verified only.
+- [ ] Found by the v1.44 audit and **not fixed yet**:
+      - Mirrored frames play *unmirrored* root motion (`MirrorPose.ProcessRootMotion` is empty), and
+        mirrored frames carry no foot phase. Another reason to keep mirroring off.
+      - Crossfade mode: interrupting a blend replaces the slot still fading out (a pop of the
+        outgoing weight). Inertialization, the default, does not have this.
+      - AI agents ask for a speed that ramps to zero over the last metre - below any walk clip -
+        so idle and walk can flicker on arrival; the obstacle sensor re-picks its avoidance side every
+        frame and can wobble when both sides are close.
+      - Demo camera: mouse orbit is multiplied by deltaTime, so its speed depends on frame rate.
 
 ## Tooling
 

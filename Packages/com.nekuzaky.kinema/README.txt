@@ -6,8 +6,9 @@ database, configurable weighted scorer, PlayableGraph runtime, and an integrated
 with live debug.
 
 REQUIREMENTS
-- Unity 6000.3 or newer.
-- Input System package is required by the sample only. The runtime has no package dependencies.
+- Unity 2021.3 LTS or newer (2021.3, 2022.3, Unity 6).
+- The runtime depends only on Burst and Mathematics. The sample uses the Input System and URP when
+  installed, and falls back to the legacy Input Manager and the built-in pipeline when not.
 
 INSTALLATION
 Package Manager > Add package from git URL:

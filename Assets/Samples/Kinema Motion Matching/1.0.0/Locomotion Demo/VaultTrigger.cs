@@ -1,6 +1,5 @@
 using Kinema.MotionMatching;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Kinema.MotionMatching.Samples
 {
@@ -41,7 +40,7 @@ namespace Kinema.MotionMatching.Samples
 
         private MotionMatchingController _controller;
         private ObstacleSensor _sensor;
-        private InputAction _vaultAction;
+        private DemoButton _vaultAction;
 
         #endregion
 
@@ -55,9 +54,8 @@ namespace Kinema.MotionMatching.Samples
                 KinemaLog.Misconfigured($"'{name}': no ObstacleSensor beside the VaultTrigger, so " +
                                         "nothing reads as vaultable and Space only free-jumps.", this);
 
-            _vaultAction = new InputAction("Vault", InputActionType.Button);
-            _vaultAction.AddBinding("<Keyboard>/space");
-            _vaultAction.AddBinding("<Gamepad>/buttonSouth");
+            _vaultAction = DemoInput.Button("Vault",
+                new[] { "<Keyboard>/space", "<Gamepad>/buttonSouth" }, KeyCode.Space, KeyCode.JoystickButton0);
         }
 
         private void OnEnable() => _vaultAction.Enable();

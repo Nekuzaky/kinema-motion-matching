@@ -1,7 +1,9 @@
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+#if KINEMA_URP
 using UnityEngine.Rendering.Universal;
+#endif
 
 namespace Kinema.MotionMatching.Samples.Editor
 {
@@ -46,7 +48,7 @@ namespace Kinema.MotionMatching.Samples.Editor
 
         private static void ConfigureLighting()
         {
-            foreach (Light light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None))
+            foreach (Light light in UnityCompat.FindAll<Light>())
             {
                 if (light.type != LightType.Directional) continue;
 
@@ -80,6 +82,7 @@ namespace Kinema.MotionMatching.Samples.Editor
 
         private static void ConfigurePostProcessing(Camera camera)
         {
+#if KINEMA_URP
             VolumeProfile profile = BuildProfile();
 
             var volumeGo = new GameObject("Post Process Volume");
@@ -101,8 +104,14 @@ namespace Kinema.MotionMatching.Samples.Editor
                 data.antialiasingQuality = AntialiasingQuality.High;
                 data.dithering = true;
             }
+#else
+            // Built-in or HDRP project: the volume overrides below are URP types. The lighting,
+            // ambient and materials still apply; only the post stack is skipped.
+            Debug.Log("[Kinema] Demo: URP is not installed, so the post-processing volume is skipped.");
+#endif
         }
 
+#if KINEMA_URP
         /// <summary>Generates (or rewrites) the volume profile asset and its overrides.</summary>
         private static VolumeProfile BuildProfile()
         {
@@ -156,6 +165,7 @@ namespace Kinema.MotionMatching.Samples.Editor
             AssetDatabase.AddObjectToAsset(component, profile);
             return component;
         }
+#endif
 
         #endregion
 

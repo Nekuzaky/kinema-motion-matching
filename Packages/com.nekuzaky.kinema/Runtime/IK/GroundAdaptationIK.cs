@@ -60,7 +60,13 @@ namespace Kinema.MotionMatching
         private Transform _pelvis;
         private Leg[] _legs;
         private float _pelvisOffset;
+        private float _heldPelvisTarget;
+        private float _airborneTime;
         private bool _resolved;
+
+        // A run's flight phase, or a walk between one foot lifting and the other planting, is a
+        // fraction of this. Longer than it, the character is genuinely off the ground.
+        private const float MaxContactGap = 0.3f;
 
         #endregion
 
@@ -90,18 +96,36 @@ namespace Kinema.MotionMatching
 
             // Pass 1: probe every planted foot, find how much each needs to move vertically.
             float lowestCorrection = 0f;
+            bool anyGrounded = false;
             for (int i = 0; i < _legs.Length; i++)
             {
                 if (!_legs[i].Valid) continue;
 
                 bool grounded = (contacts & (1 << i)) != 0;
                 ProbeLeg(ref _legs[i], t, grounded);
-                if (grounded) lowestCorrection = Mathf.Min(lowestCorrection, _legs[i].HeightOffset);
+                if (!grounded) continue;
+                anyGrounded = true;
+                lowestCorrection = Mathf.Min(lowestCorrection, _legs[i].HeightOffset);
             }
 
             // Pass 2: a planted foot that must drop below the clip's floor can only reach if the
             // pelvis follows it down; otherwise the leg would have to stretch.
-            float pelvisTarget = Mathf.Clamp(lowestCorrection, -_maxPelvisDrop, 0f) * _weight;
+            //
+            // With no foot down, hold the last answer through a short gap. Treating "no planted foot"
+            // as "no correction" sent the pelvis back up during every run flight phase and dropped it
+            // again on the next plant: on stairs and slopes the whole body bobbed once per step.
+            // Only a gap too long to be a stride (a jump, a vault) lets it return to the clip.
+            if (anyGrounded)
+            {
+                _airborneTime = 0f;
+                _heldPelvisTarget = Mathf.Clamp(lowestCorrection, -_maxPelvisDrop, 0f);
+            }
+            else
+            {
+                _airborneTime += dt;
+                if (_airborneTime > MaxContactGap || _controller.IsPlayingEvent) _heldPelvisTarget = 0f;
+            }
+            float pelvisTarget = _heldPelvisTarget * _weight;
             _pelvisOffset = Mathf.Lerp(_pelvisOffset, pelvisTarget, t);
             _pelvis.position += Vector3.up * _pelvisOffset;
 

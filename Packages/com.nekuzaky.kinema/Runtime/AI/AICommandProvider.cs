@@ -408,7 +408,7 @@ namespace Kinema.MotionMatching
         /// </summary>
         private Transform FindPlayerByConvention()
         {
-            foreach (var controller in FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None))
+            foreach (var controller in UnityCompat.FindAll<MotionMatchingController>())
                 if (controller.GetComponent<AICommandProvider>() == null)
                     return controller.transform;
 

@@ -75,7 +75,7 @@ namespace Kinema.MotionMatching.Samples.Editor
 
         internal static void ConfigureSun()
         {
-            foreach (Light light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None))
+            foreach (Light light in UnityCompat.FindAll<Light>())
             {
                 if (light.type != LightType.Directional) continue;
                 light.transform.rotation = Quaternion.Euler(50f, -30f, 0f);

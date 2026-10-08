@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Kinema.MotionMatching.Samples
 {
@@ -61,9 +60,9 @@ namespace Kinema.MotionMatching.Samples
         private SessionRecording _lastRecording;
         private readonly List<GameObject> _ghosts = new();
 
-        private InputAction _recordAction;
-        private InputAction _ghostAction;
-        private InputAction _clearAction;
+        private DemoButton _recordAction;
+        private DemoButton _ghostAction;
+        private DemoButton _clearAction;
 
         #endregion
 
@@ -76,17 +75,12 @@ namespace Kinema.MotionMatching.Samples
             _poseRecorder = GetComponent<PoseRecorder>();
 
             // Keyboard and gamepad both drive the director; K not C for clear (C is the crouch stance).
-            _recordAction = new InputAction("Record", InputActionType.Button);
-            _recordAction.AddBinding("<Keyboard>/r");
-            _recordAction.AddBinding("<Gamepad>/selectButton");
-
-            _ghostAction = new InputAction("SpawnGhost", InputActionType.Button);
-            _ghostAction.AddBinding("<Keyboard>/g");
-            _ghostAction.AddBinding("<Gamepad>/rightShoulder");
-
-            _clearAction = new InputAction("ClearGhosts", InputActionType.Button);
-            _clearAction.AddBinding("<Keyboard>/k");
-            _clearAction.AddBinding("<Gamepad>/dpad/down");
+            _recordAction = DemoInput.Button("Record",
+                new[] { "<Keyboard>/r", "<Gamepad>/selectButton" }, KeyCode.R, KeyCode.JoystickButton6);
+            _ghostAction = DemoInput.Button("SpawnGhost",
+                new[] { "<Keyboard>/g", "<Gamepad>/rightShoulder" }, KeyCode.G, KeyCode.JoystickButton5);
+            _clearAction = DemoInput.Button("ClearGhosts",
+                new[] { "<Keyboard>/k", "<Gamepad>/dpad/down" }, KeyCode.K);
         }
 
         private void OnEnable() { _recordAction.Enable(); _ghostAction.Enable(); _clearAction.Enable(); }

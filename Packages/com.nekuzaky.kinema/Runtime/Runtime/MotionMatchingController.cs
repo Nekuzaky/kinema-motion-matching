@@ -47,10 +47,18 @@ namespace Kinema.MotionMatching
         [Tooltip("Candidates within this many seconds of the current frame (same clip) count as 'keep playing'.")]
         [SerializeField, Range(0f, 0.3f)] private float _continuityWindow = 0.2f;
 
-        [Tooltip("Penalty on candidates from a different clip, as a fraction of what continuing the " +
-                 "current one costs. 0.25 = only leave a clip for something 25% better. Raise to " +
-                 "reduce clip flicker; lower for snappier switching.")]
+        // Applies to every cut, including a jump inside the clip already playing. It used to apply to
+        // a change of clip only, so a jump half a stride back in the same loop - just as visible a
+        // cut - needed to be 2% better instead of 27%, and was most of the cuts there were.
+        [Tooltip("Penalty on cutting away from the current playback (another clip, or another part " +
+                 "of this one), as a fraction of what continuing costs. 0.25 = only cut for " +
+                 "something 25% better. Raise to reduce flicker; lower for snappier switching.")]
         [SerializeField, Range(0f, 1f)] private float _clipChangeCost = 0.25f;
+
+        [Tooltip("Seconds at the end of every non-looping clip that a search never jumps into. A " +
+                 "frame there has nowhere to go: the clip ends, the pose freezes and the root " +
+                 "stops until a later search finds a way out. Playback still reaches those frames.")]
+        [SerializeField, Range(0f, 0.5f)] private float _clipEndExclusion = 0.25f;
 
         public enum TransitionMode
         {
@@ -162,8 +170,15 @@ namespace Kinema.MotionMatching
 
         public int CurrentFrame => _initialized ? MapCurrentFrame() : -1;
 
-        /// <summary>Contact bitmask of the frame currently playing (bit b = contact bone b grounded).</summary>
-        public byte CurrentContacts => _initialized ? _database.GetContacts(MapCurrentFrame()) : (byte)0;
+        /// <summary>
+        /// Contact bitmask of the frame currently playing (bit b = contact bone b grounded). Zero while
+        /// an event clip plays (or its last frame still holds the slot): the frame index then falls
+        /// back to the last database frame before the event, whose contacts say nothing about a vault
+        /// in mid-air - and foot IK reading them pinned that frame's planted foot to the ground.
+        /// </summary>
+        public byte CurrentContacts => _initialized && _activeEvent == null && _slotClipIndex[_activeSlot] >= 0
+            ? _database.GetContacts(MapCurrentFrame())
+            : (byte)0;
 
         /// <summary>Candidate frames must carry ALL these tag bits. 0 = no requirement.</summary>
         public ulong RequiredTags { get; set; }
@@ -221,7 +236,8 @@ namespace Kinema.MotionMatching
         /// counts their cost. Cutting every 0.28s with a 0.15s blend puts this at 54%, and a
         /// character that is the average of two motions for half its life never shows a whole stride.
         /// Cheap to drive down the wrong way - a shorter blend hides it and pops instead - so read it
-        /// beside the jump rate, not instead of it.
+        /// beside the jump rate, not instead of it. Counts inertialization decays as well as
+        /// crossfades: either way the pose on screen is not yet the clip that is playing.
         /// </summary>
         public float BlendFraction => _liveSeconds > 1e-4f ? _blendingSeconds / _liveSeconds : 0f;
 
@@ -372,7 +388,14 @@ namespace Kinema.MotionMatching
         private float _searchTimer;
         private bool _initialized;
 
+        // Seconds left on the inertialization decay started by the last jump (telemetry only).
+        private float _inertialBlendRemaining;
+
         private Vector3 _previousPosition;
+        private float _lastTickDt;
+        // The controller's own clock: the trajectory history is keyed by it, so several Manual Steps
+        // inside one frame still record distinct, correctly spaced samples (Time.time would not move).
+        private float _simTime;
         private Vector3 _measuredVelocity;
         private TrajectorySample[] _desiredTrajectory;
         private TrajectorySample[] _candidateTrajectory;
@@ -489,6 +512,7 @@ namespace Kinema.MotionMatching
             }
 
             _matcher = new MotionMatcher(_database, _weights) { Acceleration = _searchAcceleration };
+            _matcher.SetClipEndExclusion(_clipEndExclusion);
             _query = new MotionMatchingQuery(_database.Schema);
             _desiredTrajectory = new TrajectorySample[_database.Schema.TrajectoryPointCount];
             _candidateTrajectory = new TrajectorySample[_database.Schema.TrajectoryPointCount];
@@ -508,6 +532,8 @@ namespace Kinema.MotionMatching
             CreateGraph();
 
             _previousPosition = transform.position;
+            _lastTickDt = 0f;
+            _inertialBlendRemaining = 0f;
             _searchTimer = 0f;
             _initialized = true;
         }
@@ -527,6 +553,8 @@ namespace Kinema.MotionMatching
             if (_matcher == null) return;
             _matcher.UpdateWeights(_weights);
             _matcher.Acceleration = _searchAcceleration;
+            if (!Mathf.Approximately(_matcher.ClipEndExclusion, _clipEndExclusion))
+                _matcher.SetClipEndExclusion(_clipEndExclusion);
         }
 
         /// <summary>
@@ -605,25 +633,24 @@ namespace Kinema.MotionMatching
 
         private void Tick(float dt)
         {
-            // Measure how fast the root is actually moving; feeds the trajectory prediction.
-            if (dt > 0f)
-                _measuredVelocity = (transform.position - _previousPosition) / dt;
+            // How fast the root actually moved over the LAST tick: the displacement since then is
+            // that tick's root motion, so it divides by that tick's dt. Dividing by this one made the
+            // measurement swing with every frame-time wobble (+-20% frame time read as +-0.6 m/s at a
+            // 3 m/s run), which on its own was enough to trip deviation searches.
+            if (_lastTickDt > 0f)
+                _measuredVelocity = (transform.position - _previousPosition) / _lastTickDt;
             _previousPosition = transform.position;
-            _history.Record(Time.time, transform.position, transform.forward);
+            _lastTickDt = dt;
+            _simTime += dt;
+            _history.Record(_simTime, transform.position, transform.forward);
 
-
-            UpdateStrideWarp(dt);
-            AdvanceClocks(dt);
-
-            if (_clipOverride)
-            {
-                // Inspection mode: the clip owns the pose, the matcher stays out of it.
-            }
-            else if (_activeEvent != null)
-            {
-                TickEvent(dt);
-            }
-            else
+            // Matching runs BEFORE the clocks advance. A jump creates the new slot primed at the
+            // matched time with no root-motion delta; advancing the clocks afterwards gives it this
+            // tick's step like any other frame. Searching after the advance (as this used to) left
+            // the new clip standing still for the evaluation that followed - one frame of zero root
+            // motion and a frozen pose on every synchronous jump, several times a second.
+            // A zero-length tick (a paused game) decides nothing: there is no time to act in.
+            if (!_clipOverride && _activeEvent == null && dt > 0f)
             {
                 // Before the prediction, which is expressed in character space: turning the body
                 // changes that space, so predicting first would answer for the facing of the frame
@@ -645,11 +672,21 @@ namespace Kinema.MotionMatching
                 _searchTimer -= dt;
                 if (_searchTimer <= 0f)
                 {
-                    _searchTimer += _searchInterval;
+                    // Keep the cadence, but never owe more than half an interval: after a long hitch
+                    // the debt would otherwise be paid as a search on every frame for several frames,
+                    // each one a chance to cut.
+                    _searchTimer = Mathf.Max(_searchTimer + _searchInterval, 0.5f * _searchInterval);
                     _timeSinceSearch = 0f;
                     RunSearch();
                 }
             }
+
+            UpdateStrideWarp(dt);
+            AdvanceClocks(dt);
+
+            // After the clocks: the warp is planned against the time the event clip has reached.
+            if (!_clipOverride && _activeEvent != null)
+                TickEvent(dt);
 
             UpdateBlend(dt);
             UpdateOverlay(dt);
@@ -682,6 +719,13 @@ namespace Kinema.MotionMatching
                 {
                     transform.rotation = Quaternion.Slerp(transform.rotation, _eventTargetRotation, step);
                 }
+
+                // A CharacterController moves from where PhysX last saw it, not from the transform:
+                // with auto-sync off (Unity's default) the root motion applied in this tick's
+                // evaluation would start from the pre-warp position and write it back, silently
+                // undoing the warp - the vault would never land on its target.
+                if (_activeEvent.WarpPosition && !Physics.autoSyncTransforms)
+                    Physics.SyncTransforms();
             }
 
             if (time >= _eventClipLength - 1e-3f)
@@ -837,7 +881,7 @@ namespace Kinema.MotionMatching
 
             TrajectoryPredictor.Predict(
                 space, _measuredVelocity, desiredVelocity, desiredFacing,
-                _database.Schema.TrajectoryTimes, _prediction, _history, Time.time, _desiredTrajectory);
+                _database.Schema.TrajectoryTimes, _prediction, _history, _simTime, _desiredTrajectory);
         }
 
         /// <summary>
@@ -912,6 +956,15 @@ namespace Kinema.MotionMatching
             // applying an outcome from it would not be.
             if (!_hasPendingBatchedSearch || !_initialized) { handle.Complete(); _hasPendingBatchedSearch = false; return; }
             _hasPendingBatchedSearch = false;
+            // Something took the pose over between scheduling and now - an event started from a
+            // script that ran after this controller's Update, a clip override, a snapshot preview.
+            // The search answered a question nobody is asking any more; applying it would cut the
+            // event clip away under a root warp that keeps running.
+            if (_activeEvent != null || _clipOverride || _previewing)
+            {
+                handle.Complete();
+                return;
+            }
             MotionMatchResult result = _matcher.CompleteSearch(handle, _query);
             ApplySearchOutcome(result);
         }
@@ -952,8 +1005,8 @@ namespace Kinema.MotionMatching
         {
             int currentFrame = _lastCurrentFrame;
 
-            // Cost of simply continuing the current clip a little further.
-            int continuationFrame = ContinuationFrame(currentFrame);
+            // Cost of simply continuing the current clip.
+            int continuationFrame = CanContinue() ? ContinuationFrame(currentFrame) : -1;
             float continuationCost = continuationFrame >= 0
                 ? _matcher.EvaluateCost(_query, continuationFrame)
                 : float.MaxValue;
@@ -1030,17 +1083,17 @@ namespace Kinema.MotionMatching
         {
             MotionFrameInfo candidate = _database.GetFrame(result.FrameIndex);
 
+            // Nowhere to continue (a non-looping clip running out, an event's last frame, a frame the
+            // tags now forbid): cut. This has to come before the "already there" test below - the
+            // best match for a character standing on the end of a clip is that same end, and calling
+            // it continuity froze the character there.
+            if (continuationCost >= float.MaxValue) return true;
+
             // Candidate is essentially "where we already are" -> keep playing, no visible cut.
-            if (candidate.ClipIndex == _slotClipIndex[_activeSlot])
-            {
-                float local = LocalClipTime(candidate.ClipIndex, _slotTime[_activeSlot]);
-                float dt = Mathf.Abs(candidate.Time - local);
-                if (dt <= _continuityWindow) return false;
-            }
+            if (IsWhereWeAre(candidate)) return false;
 
-            if (continuationCost >= float.MaxValue) return true; // current clip has nowhere to continue.
-
-            // Penalize crossing into a different clip so the character keeps its rhythm.
+            // Every cut pays the brake, inside the current clip as much as out of it: a jump half a
+            // stride back in the same loop is as visible as a change of clip.
             //
             // As a FRACTION of what continuing costs, not a constant. The cost space is data-driven
             // and unbounded - a satisfied query sits near 5, one asking for a speed the bake barely
@@ -1048,10 +1101,40 @@ namespace Kinema.MotionMatching
             // nothing exactly when flicker is worst. Measured on the demo before this: 93% of
             // searches jumped, and since the motor moves the body by the clip's root motion, that
             // churn walked an idle character off at 1.2 m/s with no input touched.
-            float candidateCost = result.TotalCost;
-            if (candidate.ClipIndex != _slotClipIndex[_activeSlot])
-                candidateCost += continuationCost * _clipChangeCost;
+            float candidateCost = result.TotalCost + continuationCost * _clipChangeCost;
             return candidateCost <= continuationCost * (1f - _jumpImprovementThreshold);
+        }
+
+        /// <summary>
+        /// The candidate is the moment already playing, give or take the continuity window - same
+        /// clip, same mirroring, measured around the loop for looping clips (0.02 s into a 0.7 s loop
+        /// is 0.04 s after 0.68 s, not 0.66 s before it).
+        /// </summary>
+        private bool IsWhereWeAre(MotionFrameInfo candidate)
+        {
+            int clipIndex = _slotClipIndex[_activeSlot];
+            if (candidate.ClipIndex != clipIndex || candidate.IsMirrored != _playingMirrored) return false;
+
+            MotionClipEntry clip = _database.GetClip(clipIndex);
+            float local = LocalClipTime(clipIndex, _slotTime[_activeSlot]);
+            float distance = Mathf.Abs(candidate.Time - local);
+            if (clip.IsLooping && clip.Length > 0f) distance = Mathf.Min(distance, clip.Length - distance);
+            return distance <= _continuityWindow;
+        }
+
+        /// <summary>
+        /// Whether "keep playing" is a real option: the active slot holds a database clip (not the
+        /// event clip a finished event leaves behind, clamped on its last frame), and the frame it is
+        /// on is one the search itself would be allowed to pick. Without the tag test a clip the
+        /// stance had just forbidden kept competing as the continuation, and a crouch had to beat it
+        /// by the whole clip-change brake before the character would go down.
+        /// </summary>
+        private bool CanContinue()
+        {
+            if (_slotClipIndex[_activeSlot] < 0) return false;
+            if (!_database.HasTags || (RequiredTags == 0ul && ExcludedTags == 0ul)) return true;
+            ulong tags = _database.GetFrameTags(_lastCurrentFrame);
+            return (tags & RequiredTags) == RequiredTags && (tags & ExcludedTags) == 0ul;
         }
 
         private void StartTransitionTo(int frameIndex)
@@ -1074,6 +1157,7 @@ namespace Kinema.MotionMatching
                 _mixer.SetInputWeight(_activeSlot, 1f);
                 _mixer.SetInputWeight(1 - _activeSlot, 0f);
                 _inertializer?.RequestTransition(_blendTime);
+                _inertialBlendRemaining = _inertializer != null ? _blendTime : 0f;
                 return;
             }
 
@@ -1093,6 +1177,11 @@ namespace Kinema.MotionMatching
 
             if (!_blending)
             {
+                if (_inertialBlendRemaining > 0f)
+                {
+                    _blendingSeconds += Mathf.Min(dt, _inertialBlendRemaining);
+                    _inertialBlendRemaining -= dt;
+                }
                 _mixer.SetInputWeight(_activeSlot, 1f);
                 _mixer.SetInputWeight(1 - _activeSlot, 0f);
                 return;
@@ -1395,7 +1484,13 @@ namespace Kinema.MotionMatching
             return _playingMirrored ? _database.GetMirroredTwin(frame) : frame;
         }
 
-        /// <summary>The frame one search-interval ahead in the current clip, or -1 if it runs off the end.</summary>
+        /// <summary>
+        /// The frame "keep playing" is judged on - the one playing now, which is what the query's
+        /// live pose half describes - or -1 when a non-looping clip will run out before the next
+        /// search comes round. This used to cost the frame one interval AHEAD: a pose 0.1 s away from
+        /// the one on screen, compared against a query built from the one on screen, so continuing
+        /// paid a pose error no candidate did and lost searches it should have won.
+        /// </summary>
         private int ContinuationFrame(int currentFrame)
         {
             // currentFrame's own clip index, not _slotClipIndex[_activeSlot]: right after an event
@@ -1411,12 +1506,10 @@ namespace Kinema.MotionMatching
             // it is only meaningful while the slot is actually playing that clip. Right after an
             // event ends the slot still reads event-clip time, so fall back to the frame's own
             // (quantized, but correct) recorded time in that case.
-            float slotTime = (float)_slotTime[_activeSlot];
-            float aheadTime = (_slotClipIndex[_activeSlot] == clipIndex ? slotTime : frameInfo.Time)
-                + _searchInterval * _playbackSpeed;
-            if (aheadTime >= clip.Length) return -1;
-            int frame = _database.MapClipTimeToFrame(clipIndex, aheadTime);
-            return _playingMirrored ? _database.GetMirroredTwin(frame) : frame;
+            float now = _slotClipIndex[_activeSlot] == clipIndex ? (float)_slotTime[_activeSlot] : frameInfo.Time;
+            // Runway at the rate the clip is really played: stride warping can run it up to 30% fast.
+            float aheadTime = now + _searchInterval * _playbackSpeed * Mathf.Max(1f, _currentStrideWarp);
+            return aheadTime >= clip.Length ? -1 : currentFrame;
         }
 
         private void UpdateDebug(MotionMatchResult result, float continuationCost, bool jumped)

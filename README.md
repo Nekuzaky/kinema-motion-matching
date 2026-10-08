@@ -1,6 +1,6 @@
 # Kinema Motion Matching
 
-[![Unity 6000.3+](https://img.shields.io/badge/Unity-6000.3%2B-black)](https://unity.com/)
+[![Unity 2021.3 LTS+](https://img.shields.io/badge/Unity-2021.3%20LTS%20%E2%86%92%206000.x-black)](#unity-version-support)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](Packages/com.nekuzaky.kinema/LICENSE.md)
 [![UPM](https://img.shields.io/badge/UPM-com.nekuzaky.kinema-informational)](Packages/com.nekuzaky.kinema)
 [![Sponsor](https://img.shields.io/badge/%E2%9D%A4-Sponsor-ff69b4?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Nekuzaky)
@@ -129,8 +129,24 @@ Unity Package Manager, "Add package from git URL":
 https://github.com/Nekuzaky/kinema_motion_matching.git?path=/Packages/com.nekuzaky.kinema
 ```
 
-Requires Unity 6000.3+. The runtime depends on Burst and Mathematics, both resolved automatically by
-the Package Manager; the sample additionally uses the Input System.
+Requires Unity 2021.3 LTS or newer. The runtime depends on Burst and Mathematics, both resolved
+automatically by the Package Manager. The sample uses the Input System and URP when the project has
+them, and falls back to the legacy Input Manager and the built-in pipeline when it does not.
+
+### Unity version support
+
+| Unity | Status |
+| --- | --- |
+| 6000.3 | Supported - the version this repository's project is developed in |
+| 6000.0 LTS | Supported - EditMode suite in CI |
+| 2022.3 LTS | Supported - EditMode suite in CI |
+| 2021.3 LTS | Supported (minimum) - EditMode suite in CI |
+| 2020.3 and older | Not supported: the code needs C# 9 and .NET Standard 2.1, and the Burst release it depends on does not target them |
+
+The few APIs Unity renamed across these versions (the `FindObjectsByType` family) go through one
+`UnityCompat` class, so supporting an LTS is one `#if` per API rather than one per call site. The
+runtime, editor and sample also compile cleanly against the Unity 2021 API with and without the Input
+System. The CI compatibility jobs need the same `UNITY_LICENSE` secret as the other test jobs.
 
 ## Quick start
 

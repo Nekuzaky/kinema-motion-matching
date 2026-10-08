@@ -9,7 +9,9 @@ have deliberate tradeoffs that aren't obvious from the code alone.
 
 ## Setup
 
-1. Unity 6000.3+ (see `Packages/com.nekuzaky.kinema/package.json` for the exact minimum).
+1. Unity 6000.3+ to open this repository's project. The package itself supports 2021.3 LTS and later
+   (`Packages/com.nekuzaky.kinema/package.json`), so a change must not use an API newer than that
+   without going through `UnityCompat` - CI runs the EditMode suite on 2021.3, 2022.3 and 6000.0.
 2. Open the repository root as a Unity project - it already contains the package via a local
    reference, so no separate install step is needed to work on the package itself.
 3. `Tools > Kinema > Motion Matching Window` (Ctrl+Shift+M) to explore the tool; `Tools > Kinema >

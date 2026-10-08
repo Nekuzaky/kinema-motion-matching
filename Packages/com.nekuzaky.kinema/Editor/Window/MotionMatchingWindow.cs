@@ -986,7 +986,7 @@ namespace Kinema.MotionMatching.Editor
                 if (c != null) { _controller = c; return; }
             }
             if (_controller == null)
-                _controller = FindFirstObjectByType<MotionMatchingController>();
+                _controller = UnityCompat.FindFirst<MotionMatchingController>();
         }
 
         private void CreateConfigAsset()

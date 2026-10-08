@@ -43,6 +43,13 @@ namespace Kinema.MotionMatching.Editor
         /// frame into a freshly allocated array of length frameCount * schema.Dimension.
         /// <paramref name="contactBones"/> lists schema-bone indices treated as feet;
         /// <paramref name="contacts"/> receives one byte per frame (bit b = contact bone b grounded).
+        ///
+        /// A looping clip is sampled as the endless cycle it plays as: trajectory points past its end
+        /// come from the next cycle (the root carried on by one cycle's travel and turn), points
+        /// before its start from the previous one, and velocities at the seam are measured across it.
+        /// Clamping those to the clip's own range - as for a one-shot - told the database that every
+        /// frame near the end of a run loop was coming to a stop, so a running character kept being
+        /// sent back to the start of its loop and never completed a stride.
         /// </summary>
         public static float[] ExtractRawFeatures(
             GameObject rig, Transform root, Transform[] bones,
@@ -69,7 +76,19 @@ namespace Kinema.MotionMatching.Editor
                     bonePos[f * boneCount + b] = bones[b] != null ? bones[b].position : root.position;
             }
 
-            // --- Pass 2: assemble features in schema layout, in character space. ---
+            var samples = new ClipSamples(rootPos, rootFwd, bonePos, boneCount, dt, clip.length, clip.isLooping);
+            return AssembleFeatures(samples, schema, fps, contactBones, out contacts);
+        }
+
+        /// <summary>
+        /// Pass 2 of <see cref="ExtractRawFeatures"/>, on already-sampled transforms: assembles the
+        /// feature rows in schema layout, in character space. Separate so it can be tested without a
+        /// rig or a clip.
+        /// </summary>
+        public static float[] AssembleFeatures(ClipSamples samples, FeatureSchema schema, int fps,
+                                               int[] contactBones, out byte[] contacts)
+        {
+            int frameCount = samples.FrameCount;
             int dim = schema.Dimension;
             var features = new float[frameCount * dim];
             float[] times = schema.TrajectoryTimes;
@@ -77,36 +96,121 @@ namespace Kinema.MotionMatching.Editor
             for (int f = 0; f < frameCount; f++)
             {
                 int rowOffset = f * dim;
-                var space = new CharacterSpace(rootPos[f], rootFwd[f]);
+                var space = new CharacterSpace(samples.Root(f), samples.Forward(f));
 
-                WriteTrajectory(features, rowOffset, schema, space, rootPos, rootFwd, f, frameCount, times, fps);
-                WriteBones(features, rowOffset, schema, space, bonePos, boneCount, f, frameCount, dt);
-                WriteRootVelocity(features, rowOffset, schema, space, rootPos, f, frameCount, dt);
+                WriteTrajectory(features, rowOffset, schema, space, samples, f, times, fps);
+                WriteBones(features, rowOffset, schema, space, samples, f);
+                WriteRootVelocity(features, rowOffset, schema, space, samples, f);
             }
 
-            contacts = ExtractContacts(bonePos, boneCount, frameCount, dt, contactBones);
+            contacts = ExtractContacts(samples, contactBones);
             return features;
         }
 
-        /// <summary>Flags grounded feet: low world height and near-zero world speed.</summary>
-        private static byte[] ExtractContacts(Vector3[] bonePos, int boneCount, int frameCount, float dt, int[] contactBones)
+        /// <summary>
+        /// One clip's sampled root and bone transforms, readable at any frame index - including
+        /// indices before its start and past its end. A one-shot clamps those to its first and last
+        /// frame; a looping clip wraps them into the previous or next cycle, carried by the root's
+        /// travel and turn over one cycle.
+        /// </summary>
+        public sealed class ClipSamples
         {
+            private readonly Vector3[] _rootPos, _rootFwd, _bonePos;
+            private readonly float _dt, _length;
+
+            // One cycle's root displacement, as a rigid move: rotate about Y by _cycleTurn around
+            // the cycle's start, then carry the start to the cycle's end.
+            private readonly Vector3 _cycleStart, _cycleEnd;
+            private readonly Quaternion _cycleTurn;
+
+            public int FrameCount { get; }
+            public int BoneCount { get; }
+            public bool Looping { get; }
+
+            public ClipSamples(Vector3[] rootPos, Vector3[] rootFwd, Vector3[] bonePos, int boneCount,
+                               float dt, float length, bool looping)
+            {
+                _rootPos = rootPos;
+                _rootFwd = rootFwd;
+                _bonePos = bonePos;
+                BoneCount = boneCount;
+                FrameCount = rootPos.Length;
+                _dt = dt;
+                _length = length;
+                // A single frame has no cycle to speak of.
+                Looping = looping && FrameCount > 1 && length > 0f;
+                _cycleTurn = Quaternion.identity;
+                if (!Looping) return;
+
+                // Where the root is one full cycle on, extrapolated from the last frame's own motion
+                // over the time left to the loop point (the last sample sits up to one frame short of
+                // it). Extrapolated rather than sampled at clip.length: whether sampling a looping clip
+                // exactly at its length lands on the end of the cycle or wraps back to its start is not
+                // something to stake the whole database on.
+                int last = FrameCount - 1;
+                float remaining = Mathf.Clamp(length - last * dt, 0f, dt) / dt;
+                _cycleStart = rootPos[0];
+                _cycleEnd = rootPos[last] + (rootPos[last] - rootPos[last - 1]) * remaining;
+                float endYaw = Yaw(rootFwd[last]) + Mathf.DeltaAngle(Yaw(rootFwd[last - 1]), Yaw(rootFwd[last])) * remaining;
+                _cycleTurn = Quaternion.AngleAxis(Mathf.DeltaAngle(Yaw(rootFwd[0]), endYaw), Vector3.up);
+            }
+
+            public Vector3 Root(int index) => CyclePoint(_rootPos[Resolve(index, out int cycle)], cycle);
+            public Vector3 Forward(int index) => CycleDirection(_rootFwd[Resolve(index, out int cycle)], cycle);
+            public Vector3 Bone(int index, int bone) => CyclePoint(_bonePos[Resolve(index, out int cycle) * BoneCount + bone], cycle);
+
+            /// <summary>Clip time of a frame index, continuous across cycles for a looping clip.</summary>
+            public float TimeOf(int index)
+            {
+                int frame = Resolve(index, out int cycle);
+                return cycle * _length + frame * _dt;
+            }
+
+            private int Resolve(int index, out int cycle)
+            {
+                cycle = 0;
+                if (!Looping) return Mathf.Clamp(index, 0, FrameCount - 1);
+                while (index < 0) { index += FrameCount; cycle--; }
+                while (index >= FrameCount) { index -= FrameCount; cycle++; }
+                return index;
+            }
+
+            private Vector3 CyclePoint(Vector3 point, int cycle)
+            {
+                for (; cycle > 0; cycle--) point = _cycleTurn * (point - _cycleStart) + _cycleEnd;
+                for (; cycle < 0; cycle++) point = Quaternion.Inverse(_cycleTurn) * (point - _cycleEnd) + _cycleStart;
+                return point;
+            }
+
+            private Vector3 CycleDirection(Vector3 direction, int cycle)
+            {
+                for (; cycle > 0; cycle--) direction = _cycleTurn * direction;
+                for (; cycle < 0; cycle++) direction = Quaternion.Inverse(_cycleTurn) * direction;
+                return direction;
+            }
+
+            private static float Yaw(Vector3 forward) => Mathf.Atan2(forward.x, forward.z) * Mathf.Rad2Deg;
+        }
+
+        /// <summary>Flags grounded feet: low world height and near-zero world speed.</summary>
+        private static byte[] ExtractContacts(ClipSamples samples, int[] contactBones)
+        {
+            int frameCount = samples.FrameCount;
+            int boneCount = samples.BoneCount;
             var contacts = new byte[frameCount];
             if (contactBones == null || contactBones.Length == 0) return contacts;
 
             for (int f = 0; f < frameCount; f++)
             {
-                int prev = Mathf.Max(f - 1, 0);
-                int next = Mathf.Min(f + 1, frameCount - 1);
-                float span = Mathf.Max((next - prev) * dt, 1e-5f);
+                float span = Mathf.Max(samples.TimeOf(f + 1) - samples.TimeOf(f - 1), 1e-5f);
 
                 byte mask = 0;
                 for (int c = 0; c < contactBones.Length && c < 8; c++)
                 {
                     int b = contactBones[c];
                     if (b < 0 || b >= boneCount) continue;
-                    Vector3 pos = bonePos[f * boneCount + b];
-                    float speed = (bonePos[next * boneCount + b] - bonePos[prev * boneCount + b]).magnitude / span;
+                    Vector3 pos = samples.Bone(f, b);
+                    float speed = (samples.Bone(f + 1, b) - samples.Bone(f - 1, b)).magnitude / span;
                     if (speed <= ContactMaxSpeed && pos.y <= ContactMaxHeight)
                         mask |= (byte)(1 << c);
                 }
@@ -121,16 +225,16 @@ namespace Kinema.MotionMatching.Editor
 
         private static void WriteTrajectory(
             float[] features, int rowOffset, FeatureSchema schema, CharacterSpace space,
-            Vector3[] rootPos, Vector3[] rootFwd, int f, int frameCount, float[] times, int fps)
+            ClipSamples samples, int f, float[] times, int fps)
         {
             int posOffset = rowOffset + schema.TrajectoryPositionOffset;
             int dirOffset = rowOffset + schema.TrajectoryDirectionOffset;
 
             for (int p = 0; p < times.Length; p++)
             {
-                int j = Mathf.Clamp(f + Mathf.RoundToInt(times[p] * fps), 0, frameCount - 1);
-                Vector2 localPos = space.ToLocalPoint(rootPos[j]);
-                Vector2 localDir = space.ToLocalDirection(rootFwd[j]);
+                int j = f + Mathf.RoundToInt(times[p] * fps);
+                Vector2 localPos = space.ToLocalPoint(samples.Root(j));
+                Vector2 localDir = space.ToLocalDirection(samples.Forward(j));
 
                 features[posOffset + p * 2] = localPos.x;
                 features[posOffset + p * 2 + 1] = localPos.y;
@@ -141,21 +245,19 @@ namespace Kinema.MotionMatching.Editor
 
         private static void WriteBones(
             float[] features, int rowOffset, FeatureSchema schema, CharacterSpace space,
-            Vector3[] bonePos, int boneCount, int f, int frameCount, float dt)
+            ClipSamples samples, int f)
         {
             int posOffset = rowOffset + schema.BonePositionOffset;
             int velOffset = rowOffset + schema.BoneVelocityOffset;
 
-            int prev = Mathf.Max(f - 1, 0);
-            int next = Mathf.Min(f + 1, frameCount - 1);
-            float span = Mathf.Max((next - prev) * dt, 1e-5f);
+            float span = Mathf.Max(samples.TimeOf(f + 1) - samples.TimeOf(f - 1), 1e-5f);
 
             bool naive = schema.PoseMode == PoseCostMode.Naive;
 
-            for (int b = 0; b < boneCount; b++)
+            for (int b = 0; b < samples.BoneCount; b++)
             {
-                Vector3 localPos = space.ToLocalOffset3D(bonePos[f * boneCount + b]);
-                Vector3 worldVel = (bonePos[next * boneCount + b] - bonePos[prev * boneCount + b]) / span;
+                Vector3 localPos = space.ToLocalOffset3D(samples.Bone(f, b));
+                Vector3 worldVel = (samples.Bone(f + 1, b) - samples.Bone(f - 1, b)) / span;
                 Vector3 localVel = space.ToLocalVector3D(worldVel);
 
                 // Through the schema, never inline: the live query writes the same slots from the
@@ -177,13 +279,11 @@ namespace Kinema.MotionMatching.Editor
 
         private static void WriteRootVelocity(
             float[] features, int rowOffset, FeatureSchema schema, CharacterSpace space,
-            Vector3[] rootPos, int f, int frameCount, float dt)
+            ClipSamples samples, int f)
         {
-            int prev = Mathf.Max(f - 1, 0);
-            int next = Mathf.Min(f + 1, frameCount - 1);
-            float span = Mathf.Max((next - prev) * dt, 1e-5f);
+            float span = Mathf.Max(samples.TimeOf(f + 1) - samples.TimeOf(f - 1), 1e-5f);
 
-            Vector3 worldVel = (rootPos[next] - rootPos[prev]) / span;
+            Vector3 worldVel = (samples.Root(f + 1) - samples.Root(f - 1)) / span;
             Vector2 localVel = space.ToLocalDirection(worldVel);
 
             int offset = rowOffset + schema.RootVelocityOffset;

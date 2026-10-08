@@ -9,8 +9,10 @@ one-click rig swap, and a search-performance benchmark.
 
 ## Requirements
 
-- Unity 6000.3 or newer.
-- Input System package (`com.unity.inputsystem`) for the sample only. The runtime has no package dependencies.
+- Unity 2021.3 LTS or newer (2021.3, 2022.3, Unity 6).
+- The runtime depends only on Burst and Mathematics, resolved automatically. The sample uses the Input
+  System and URP when installed, and falls back to the legacy Input Manager and the built-in pipeline
+  when not.
 
 ## Installation
 
