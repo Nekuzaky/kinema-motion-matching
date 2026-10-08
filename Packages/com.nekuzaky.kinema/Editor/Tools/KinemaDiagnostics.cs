@@ -35,7 +35,7 @@ namespace Kinema.MotionMatching.Editor
             text.AppendLine("===== KINEMA DIAGNOSTICS =====");
             AppendEnvironment(text);
 
-            var controllers = Object.FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None);
+            var controllers = UnityCompat.FindAll<MotionMatchingController>();
             if (controllers.Length == 0)
             {
                 text.AppendLine();
@@ -114,7 +114,7 @@ namespace Kinema.MotionMatching.Editor
             Add(present, controller.GetComponent<AICommandProvider>(), "AICommandProvider");
 
             text.AppendLine($"  parts    : {(present.Length == 0 ? "(none)" : present.ToString())}");
-            text.AppendLine($"  batch    : {(Object.FindFirstObjectByType<MotionMatchingSearchBatch>() != null ? "yes" : "no")}");
+            text.AppendLine($"  batch    : {(UnityCompat.FindFirst<MotionMatchingSearchBatch>() != null ? "yes" : "no")}");
         }
 
         private static void AppendTags(StringBuilder text, MotionMatchingController controller, MotionMatchingDatabase database)

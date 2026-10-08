@@ -1,6 +1,5 @@
 using Kinema.MotionMatching;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Kinema.MotionMatching.Samples
 {
@@ -41,7 +40,7 @@ namespace Kinema.MotionMatching.Samples
 
         private MotionMatchingController _controller;
         private ObstacleSensor _sensor;
-        private InputAction _vaultAction;
+        private DemoButton _vaultAction;
 
         #endregion
 
@@ -55,9 +54,8 @@ namespace Kinema.MotionMatching.Samples
                 KinemaLog.Misconfigured($"'{name}': no ObstacleSensor beside the VaultTrigger, so " +
                                         "nothing reads as vaultable and Space only free-jumps.", this);
 
-            _vaultAction = new InputAction("Vault", InputActionType.Button);
-            _vaultAction.AddBinding("<Keyboard>/space");
-            _vaultAction.AddBinding("<Gamepad>/buttonSouth");
+            _vaultAction = DemoInput.Button("Vault",
+                new[] { "<Keyboard>/space", "<Gamepad>/buttonSouth" }, KeyCode.Space, KeyCode.JoystickButton0);
         }
 
         private void OnEnable() => _vaultAction.Enable();
@@ -84,8 +82,9 @@ namespace Kinema.MotionMatching.Samples
 
                 if (autoTriggered || _vaultAction.WasPressedThisFrame())
                 {
-                    KinemaLog.Event($"{name}: vault over '{(ahead.Collider != null ? ahead.Collider.name : "?")}' " +
-                                    $"(top {ahead.Height:F2} m, {ahead.Depth:F2} m thick)", this);
+                    if (KinemaLog.Verbose)
+                        KinemaLog.Event($"{name}: vault over '{(ahead.Collider != null ? ahead.Collider.name : "?")}' " +
+                                        $"(top {ahead.Height:F2} m, {ahead.Depth:F2} m thick)", this);
                     Vault(ahead);
                 }
                 return;
@@ -100,7 +99,8 @@ namespace Kinema.MotionMatching.Samples
                 if (jump == null) jump = moving ? _jumpIdleEvent : _jumpMovingEvent;
                 if (jump != null)
                 {
-                    KinemaLog.Event($"{name}: free jump ({(moving ? "moving" : "standing")}) with '{jump.name}'", this);
+                    if (KinemaLog.Verbose)
+                        KinemaLog.Event($"{name}: free jump ({(moving ? "moving" : "standing")}) with '{jump.name}'", this);
                     _controller.PlayEvent(jump, transform.position, Quaternion.LookRotation(Flatten(transform.forward), Vector3.up));
                 }
                 else

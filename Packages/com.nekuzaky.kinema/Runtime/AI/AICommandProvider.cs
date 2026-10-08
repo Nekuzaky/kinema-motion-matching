@@ -42,6 +42,18 @@ namespace Kinema.MotionMatching
         [Tooltip("Ease speed down within this distance of the goal (meters).")]
         [SerializeField, Min(0.5f)] private float _slowRadius = 2.5f;
 
+        // The ease used to run all the way to zero, so the last metre asked for 0.05-0.4 m/s: below
+        // any walk clip, below the controller's turn and stride-warp floors. Idle and walk flickered
+        // in turn on every arrival - and an agent a stop clip parked just outside the arrive radius
+        // asked for a speed nothing in the data could deliver, and stood there for good.
+        [Tooltip("Slowest an agent asks to move while it still has somewhere to go (m/s). Keep it at " +
+                 "or above your slowest walk clip; below it the matcher has nothing to play.")]
+        [SerializeField, Min(0f)] private float _minMoveSpeed = 0.8f;
+
+        [Tooltip("After arriving, how much further the goal must get before the agent sets off " +
+                 "again (meters). Without it an agent on the arrive radius toggles stop/go.")]
+        [SerializeField, Min(0f)] private float _rearmDistance = 0.5f;
+
         [Tooltip("Flee/Follow: desired standoff distance from the target (meters).")]
         [SerializeField, Min(0.5f)] private float _standoff = 2f;
 
@@ -143,6 +155,9 @@ namespace Kinema.MotionMatching
         private float _overrideUntil;
         private float _steer;
         private int _preferredSide;
+        // The side committed to while the way ahead stays blocked; 0 = not avoiding anything.
+        private int _avoidSide;
+        private float _avoidSpeedScale = 1f;
         private bool _resolved;
 
         #endregion
@@ -220,8 +235,9 @@ namespace Kinema.MotionMatching
                 // The brain's own words for why. An NPC doing something inexplicable is the most
                 // common thing to have to explain, and the explanation already exists - it just never
                 // left the AI tab.
-                KinemaLog.Event($"{name}: {_lastGoal} -> {command.Goal} @ {command.SpeedScale:F2}x " +
-                                $"(\"{command.Reason}\")", this);
+                if (KinemaLog.Verbose)
+                    KinemaLog.Event($"{name}: {_lastGoal} -> {command.Goal} @ {command.SpeedScale:F2}x " +
+                                    $"(\"{command.Reason}\")", this);
                 _lastGoal = command.Goal;
                 _commandStart = Time.time;
             }
@@ -282,10 +298,13 @@ namespace Kinema.MotionMatching
             Vector3 toGoal = Flat(target - transform.position);
             float distance = toGoal.magnitude;
 
-            if (distance <= stopDistance) { ReachedGoal = true; return Vector3.zero; }
+            // Hysteresis: once there, stay there until the goal is clearly elsewhere.
+            float rearm = ReachedGoal ? _rearmDistance : 0f;
+            if (distance <= stopDistance + rearm) { ReachedGoal = true; return Vector3.zero; }
             ReachedGoal = false;
 
             float eased = speed * Mathf.Clamp01((distance - stopDistance) / _slowRadius);
+            eased = Mathf.Max(eased, Mathf.Min(_minMoveSpeed, speed));
             return toGoal / Mathf.Max(distance, 1e-4f) * eased;
         }
 
@@ -305,6 +324,8 @@ namespace Kinema.MotionMatching
             if (speed < 1e-3f)
             {
                 _steer = Mathf.Lerp(_steer, 0f, Damp(dt));
+                _avoidSpeedScale = Mathf.Lerp(_avoidSpeedScale, 1f, Damp(dt));
+                _avoidSide = 0;
                 return desired;
             }
 
@@ -312,22 +333,37 @@ namespace Kinema.MotionMatching
             float centre = Probe(forward, goalTarget);
 
             float target = 0f;
+            float speedScale = 1f;
             if (centre < _probeDistance)
             {
                 float left = Probe(Turn(forward, -_whiskerAngle), goalTarget);
                 float right = Probe(Turn(forward, _whiskerAngle), goalTarget);
 
                 // Steer toward the roomier side; when they tie, this agent's fixed side breaks it.
+                // Then keep that side while the way ahead stays blocked. Re-picking every frame let
+                // two near-equal feelers flip it back and forth - the steer averaged out to nothing
+                // and the agent wobbled straight into the wall. Only a clearly better other side
+                // (a dead end on this one) changes its mind.
                 float bias = right - left;
-                int side = Mathf.Abs(bias) > 0.1f ? (bias > 0f ? 1 : -1) : _preferredSide;
+                int roomier = Mathf.Abs(bias) > 0.1f ? (bias > 0f ? 1 : -1) : _preferredSide;
+                if (_avoidSide == 0 || bias * _avoidSide < -0.35f * _probeDistance) _avoidSide = roomier;
 
                 // Urgency: touching the obstacle steers hardest, a distant one barely at all.
-                target = side * (1f - centre / _probeDistance);
+                target = _avoidSide * (1f - centre / _probeDistance);
 
                 // Slow into the turn. Cornering at full speed either clips the obstacle or asks the
                 // search for a hard turn at a speed the data has no clip for.
-                speed *= Mathf.Lerp(1f, 0.45f, 1f - centre / _probeDistance);
+                speedScale = Mathf.Lerp(1f, 0.45f, 1f - centre / _probeDistance);
             }
+            else
+            {
+                _avoidSide = 0;
+            }
+
+            // Smoothed like the steer, and for the same reason: the search reads this speed as intent,
+            // and one that snaps with every feeler reading is a stop/go stutter.
+            _avoidSpeedScale = Mathf.Lerp(_avoidSpeedScale, speedScale, Damp(dt));
+            speed *= _avoidSpeedScale;
 
             _steer = Mathf.Lerp(_steer, target, Damp(dt));
             Vector3 heading = Turn(forward, _steer * _maxSteerAngle);
@@ -408,7 +444,7 @@ namespace Kinema.MotionMatching
         /// </summary>
         private Transform FindPlayerByConvention()
         {
-            foreach (var controller in FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None))
+            foreach (var controller in UnityCompat.FindAll<MotionMatchingController>())
                 if (controller.GetComponent<AICommandProvider>() == null)
                     return controller.transform;
 

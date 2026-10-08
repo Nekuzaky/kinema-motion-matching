@@ -4,6 +4,133 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] - 2026-10-08
+
+Production-grade runtime: the techniques AAA motion matching ships with, built the way a
+production needs them - measurable, allocation-free, responsive without sliding.
+
+### Added
+- **Simulation/animation sync** (Holden, *Code vs Data Driven Displacement*). The controller runs a
+  simulated character toward the desired velocity on the same critically damped spring the
+  trajectory prediction uses - the character is pulled along exactly the path it searched for - and
+  `ProcessRootMotion(ref deltaPosition, ref deltaRotation)` nudges root motion toward it by at most
+  `Sync Max Ratio` of the animation's own movement. A standing animation is never dragged; a moving
+  one slides by at most that fraction. Leashed to the character so a wall cannot pull it on for ever.
+  On by default for motors that call `ProcessRootMotion` (the sample `CharacterMotor` does); an
+  Animator applying root motion by itself is untouched. Maths in `LocomotionSimulation`, unit tested
+  (frame-rate independence, agreement with the predicted trajectory, the ratio bound).
+- Unity Profiler markers: `Kinema.Tick`, `Kinema.Search`, `Kinema.EvaluateGraph`,
+  `Kinema.FootLockIK`, `Kinema.GroundAdaptationIK`, `Kinema.CompleteBatchedSearches`.
+- `AllocationPlayModeTests`: a ticking character - searches, jumps and transitions included -
+  allocates nothing on the managed heap.
+
+### Fixed
+- **Per-frame allocations removed** (each one a GC stall waiting to happen, multiplied by the
+  number of characters): `AnimationClip.events` was read every frame on every character (the getter
+  builds a fresh array each call) - now cached per clip at initialization; every search allocated its
+  group-cost array - now owned by the matcher (`MotionMatchResult.GroupCosts` is valid until that
+  matcher's next search; copy it to keep it); `ScriptedAIBrain` formatted status strings every frame
+  for a label only the editor reads - now built when read; log messages were formatted with logging
+  off. Weight changes no longer allocate, and bone lookup walks the hierarchy once instead of once per
+  bone.
+- **Mirrored frames played unmirrored root motion** for motors using `ProcessRootMotion`: the step
+  is now reflected across the character's own side.
+- **AI agents flickered between idle and walk on arrival** - the eased speed ran down to nothing the
+  data could play - and an agent parked just outside its arrive radius stood there for good. Speed
+  now floors at `Min Move Speed`, and arrival has hysteresis (`Rearm Distance`).
+- **AI avoidance wobbled into walls** when both feelers read alike: the avoidance side is now kept
+  while the way stays blocked, and the slow-down is smoothed like the steer.
+- **Crossfade interruption popped** by up to the whole outgoing pose; the new clip now takes the
+  lighter of the two slots.
+- Demo camera: mouse orbit no longer depends on frame rate (a pixel delta is an angle, a stick is a
+  rate), and no longer saturates on a brisk drag.
+
+### Notes
+- Verified outside Unity: everything compiles against the Unity 2021 API; the new EditMode tests
+  pass against a pure-managed stand-in for Unity's math. The allocation test and the feel of the sync
+  have not been run in Unity here.
+
+## [1.44.0] - 2026-10-08
+
+Smoothness, and every LTS from 2021.3. Two audits of the runtime against "it still isn't fluid"
+found the stutter was not one bug but several, each firing several times a second: a frozen frame
+at every transition, then a lurch at double speed; one frame of zero root motion at every jump; a
+run loop baked as if it were stopping, so the matcher kept sending a running character back to the
+start of its stride. Each fix below names what it looked like on screen.
+
+### Fixed
+- **Inertialization froze the pose for a frame, then kicked it at double speed.** On the frame of a
+  switch the offset was captured as "previous output minus new input", so every bone repeated its
+  previous pose; and the offset's initial velocity was the outgoing velocity alone, not outgoing
+  minus incoming, so on the next frames the limbs moved at roughly the sum of the two motions. Now
+  the switch frame extrapolates the outgoing pose along its own velocity, the next frame measures
+  the incoming clip's velocity from two real samples, and only then is the offset captured -
+  position and velocity are continuous across the seam. A transition requested while time is not
+  moving (a paused game) used to divide by a 1e-5 s step: in the new test it moved a bone 44 m in one
+  frame; it now waits for a real step. The maths moved to `InertializationMath` and is covered by
+  EditMode tests that fail on the old code.
+- **Every synchronous jump dropped one frame of root motion.** The search ran after the clocks had
+  advanced, so the new clip was created at the matched time with no root-motion delta and stood
+  still for that evaluation. The search now runs first and the new clip advances with the frame.
+- **Looping clips were baked as if they stopped at their last frame.** Future and past trajectory
+  points were clamped to the clip's own frames, so in a 0.7 s run loop every frame in its second
+  half "predicted" a stop, and the matcher jumped back to the start of the loop every ~0.25 s - the
+  legs never completed a stride. Looping clips are now sampled as the cycle they play as: points
+  past the end come from the next cycle (carried by one cycle's travel and turn), velocities at the
+  seam are measured across it. **Rebake your databases** to get this.
+- **Jumps inside the same clip skipped the clip-change brake**: half a stride back in the same loop
+  needed to be 2% better instead of 27%. Every cut now pays it. The continuity window is also
+  measured around the loop (0.02 s into a 0.7 s loop is 0.04 s after 0.68 s) and respects mirroring.
+- **"Keep playing" was judged on the wrong frame.** Continuing a one-shot clip was costed one search
+  interval ahead, against a query built from the pose on screen now - so it paid a pose error no
+  candidate paid. It is now judged on the frame playing, with the runway measured at the rate the
+  clip actually plays (stride warping included).
+- **A character could freeze on the last frame of a clip.** The "already where we are" test ran
+  before the "this clip is ending" test, and nothing kept the search from picking the end of a
+  one-shot - whose best match is usually that same end. The ending test now comes first, and the
+  search no longer selects the last 0.25 s of non-looping clips (`Clip End Exclusion`; playback still
+  reaches them).
+- **After a vault, matching could stay stuck on the event's last frame**: continuing was costed on
+  the stale pre-event frame. With an event clip in the slot, continuing is no longer an option.
+- **A crouch had to beat the standing clip by the full brake.** Continuing a frame the tags now
+  forbid was still allowed to compete; it no longer is.
+- **Foot lock popped up to 0.25 m.** A lock broken by distance re-locked on the next frame, at the
+  animated foot, while the release was still blending. A broken lock now stays off until the foot
+  lifts, and a contact that starts during a release locks where the foot is drawn.
+- **Foot IK pinned a pre-vault foot to the ground in mid-air**: during an event `CurrentContacts`
+  reported the contacts of the last locomotion frame. It now reports none.
+- **The pelvis bobbed once per step on slopes and stairs**: with no foot planted (every run flight
+  phase) its correction snapped back to zero. It now holds through a stride-length gap.
+- **Measured velocity was divided by the wrong frame's dt**, so frame-time jitter alone read as
+  +-0.6 m/s at a run and tripped deviation searches.
+- **A frame hitch was repaid as a search on every frame**; the search debt is now capped at half an
+  interval. A zero-length tick no longer searches at all.
+- **A vault's position warp was undone by a CharacterController** (it moves from where PhysX last
+  saw it); transforms are synced after the warp when auto-sync is off.
+- **A batched search finishing after an event started cut the event clip away** under a warp that
+  kept running; a search whose question is no longer being asked is now discarded.
+- Manual tick mode keys the trajectory history by its own clock, so several `Step` calls in one
+  frame record correctly spaced samples.
+- `BlendFraction` counted crossfades only and read 0% in the default inertialization mode.
+
+### Changed
+- **Unity 2021.3 LTS and later** (was 6000.3). The renamed `FindObjectsByType` family goes through a
+  new `UnityCompat` class; nothing else in the runtime or editor needed changing. CI gains an
+  EditMode matrix on 2021.3, 2022.3 and 6000.0 (package mode).
+- The sample no longer requires the Input System or URP: `DemoInput` reads the Input System when it
+  is installed and the legacy Input Manager otherwise, and the URP post-processing volume is only
+  built when URP is present.
+- Demo camera: the aim follows a focus point that eases in height, so stair steps no longer jerk the
+  view. Stick input is rescaled past the deadzone instead of jumping to 20% of top speed.
+- The committed demo scene carried 0.12 / 0.1 for the continuity window / clip-change brake from
+  before v1.30; it now has the current defaults.
+
+### Notes
+- Verified outside Unity only: the runtime, editor and sample compile against the Unity 2021 API
+  (with and without the Input System), and the new EditMode tests for the inertializer and the loop
+  bake pass against a pure-managed stand-in for Unity's math types. How the result reads on screen
+  still needs a play session - and a rebake, for the loop fix.
+
 ## [1.43.0] - 2026-07-16
 
 Asset Store readiness, continued: say what is not ours, and prove the runtime runs.

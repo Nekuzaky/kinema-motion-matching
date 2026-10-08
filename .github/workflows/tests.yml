@@ -90,3 +90,44 @@ jobs:
         with:
           name: PlayMode-test-results
           path: ${{ steps.tests.outputs.artifactsPath }}
+
+  # The project above is a Unity 6000.3 project, so it can only ever prove 6000.3. The package
+  # promises 2021.3 LTS and later; this job tests that promise on every LTS line by running the
+  # EditMode suite against the package alone (game-ci "package mode": a throwaway project per
+  # editor version with the package installed by path). An API that exists in only some of these
+  # editors breaks this matrix, not a user's project.
+  compatibility:
+    name: EditMode tests (Unity ${{ matrix.unityVersion }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unityVersion:
+          - 2021.3.45f1
+          - 2022.3.62f1
+          - 6000.0.58f2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Run EditMode tests against the package
+        uses: game-ci/unity-test-runner@v4
+        id: tests
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          packageMode: true
+          projectPath: Packages/com.nekuzaky.kinema
+          unityVersion: ${{ matrix.unityVersion }}
+          testMode: EditMode
+          artifactsPath: compat-${{ matrix.unityVersion }}-artifacts
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EditMode-compat-${{ matrix.unityVersion }}
+          path: ${{ steps.tests.outputs.artifactsPath }}

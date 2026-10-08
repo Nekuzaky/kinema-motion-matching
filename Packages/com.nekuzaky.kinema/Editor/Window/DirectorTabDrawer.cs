@@ -355,7 +355,7 @@ namespace Kinema.MotionMatching.Editor
         private static ReplayLocomotionProvider NewestGhost(MotionMatchingController controller)
         {
             ReplayLocomotionProvider newest = null;
-            foreach (ReplayLocomotionProvider replay in UnityEngine.Object.FindObjectsByType<ReplayLocomotionProvider>(FindObjectsSortMode.None))
+            foreach (ReplayLocomotionProvider replay in UnityCompat.FindAll<ReplayLocomotionProvider>())
                 if (replay.gameObject != controller.gameObject)
                     newest = replay;
             return newest;
@@ -490,7 +490,7 @@ namespace Kinema.MotionMatching.Editor
 
                     if (GUILayout.Button("Clear Ghosts"))
                     {
-                        foreach (ReplayLocomotionProvider replay in UnityEngine.Object.FindObjectsByType<ReplayLocomotionProvider>(FindObjectsSortMode.None))
+                        foreach (ReplayLocomotionProvider replay in UnityCompat.FindAll<ReplayLocomotionProvider>())
                             if (replay.gameObject != controller.gameObject)
                                 UnityEngine.Object.Destroy(replay.gameObject);
                     }

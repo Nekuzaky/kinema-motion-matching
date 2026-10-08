@@ -56,6 +56,11 @@ namespace Kinema.MotionMatching.Samples
             if (dt <= 0f) return;
 
             Vector3 delta = _animator.deltaPosition;
+            Quaternion turn = _animator.deltaRotation;
+
+            // Mirrored frames and the simulation sync: the controller corrects the step before the
+            // collision pass moves the body by it.
+            if (_matching != null) _matching.ProcessRootMotion(ref delta, ref turn);
 
             if (_matching != null && _matching.IsPlayingEvent)
             {
@@ -74,7 +79,7 @@ namespace Kinema.MotionMatching.Samples
 
             _controller.Move(delta);
 
-            transform.rotation *= _animator.deltaRotation;
+            transform.rotation *= turn;
         }
 
         #endregion

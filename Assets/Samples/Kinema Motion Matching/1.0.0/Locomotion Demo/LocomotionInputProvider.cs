@@ -1,5 +1,4 @@
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Kinema.MotionMatching.Samples
 {
@@ -53,8 +52,8 @@ namespace Kinema.MotionMatching.Samples
 
         #region Private and Protected
 
-        private InputAction _moveAction;
-        private InputAction _strafeAction;
+        private DemoVector _moveAction;
+        private DemoButton _strafeAction;
         private Vector3 _desiredVelocity;
         private bool _strafe;
 
@@ -64,17 +63,9 @@ namespace Kinema.MotionMatching.Samples
 
         private void Awake()
         {
-            _moveAction = new InputAction("Move", InputActionType.Value);
-            _moveAction.AddCompositeBinding("2DVector")
-                .With("Up", "<Keyboard>/w")
-                .With("Down", "<Keyboard>/s")
-                .With("Left", "<Keyboard>/a")
-                .With("Right", "<Keyboard>/d");
-            _moveAction.AddBinding("<Gamepad>/leftStick");
-
-            _strafeAction = new InputAction("Strafe", InputActionType.Button);
-            _strafeAction.AddBinding("<Mouse>/rightButton");
-            _strafeAction.AddBinding("<Gamepad>/leftTrigger");
+            _moveAction = DemoInput.Move();
+            _strafeAction = DemoInput.Button("Strafe",
+                new[] { "<Mouse>/rightButton", "<Gamepad>/leftTrigger" }, KeyCode.Mouse1);
 
             if (_cameraTransform == null && Camera.main != null)
                 _cameraTransform = Camera.main.transform;
@@ -86,13 +77,20 @@ namespace Kinema.MotionMatching.Samples
         private void Update()
         {
             _strafe = _strafeAction.IsPressed();
-            Vector2 move = _moveAction.ReadValue<Vector2>();
+            Vector2 move = _moveAction.ReadValue();
 
             // Deadzone: a gamepad stick rarely rests at exactly zero, and even 5% drift here would
             // feed a constant desired velocity - the character walks off with no input touched, the
             // "it moves on its own at Play" report. Below the threshold the stick reads as centred;
             // keyboard input is 0 or 1 so this never affects it.
-            if (move.sqrMagnitude < _stickDeadzone * _stickDeadzone) move = Vector2.zero;
+            //
+            // Rescaled past the threshold rather than passed through: a stick just outside a 0.2
+            // deadzone used to ask for 20% of top speed at once, so a thumb resting near the edge
+            // toggled the request between 0 and 0.6 m/s - idle and walk flickering in turn. Now the
+            // request starts from zero at the deadzone and reaches full speed at full tilt.
+            float tilt = move.magnitude;
+            if (tilt < _stickDeadzone) move = Vector2.zero;
+            else if (tilt < 1f) move *= Mathf.InverseLerp(_stickDeadzone, 1f, tilt) / tilt;
 
             Vector3 forward = _cameraTransform != null ? Flatten(_cameraTransform.forward) : Vector3.forward;
             Vector3 right = _cameraTransform != null ? Flatten(_cameraTransform.right) : Vector3.right;

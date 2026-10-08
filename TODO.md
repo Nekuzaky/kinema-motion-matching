@@ -89,6 +89,21 @@ largely unjudged. This file tracks what's left, roughly in priority order within
 - [ ] Events and overlay layers have exactly one demonstrated use case each (vault; none for
       overlays). Untested against overlapping events, event-during-event, or multiple concurrent
       overlay layers.
+- [ ] **Judge the v1.44 smoothness fixes on screen.** Inertialization continuity, the jump-frame
+      root-motion stall, wrapped loop trajectories (needs a rebake), the same-clip brake and the
+      foot-lock re-lock are unit tested or compile-verified only.
+- [ ] **Judge the v1.45 simulation/animation sync on screen** and tune its defaults (half-life
+      0.15 s, max ratio 0.4, lead 0.5 m) against a real capture set. Run `AllocationPlayModeTests`
+      in the editor once CI has a license.
+- [ ] Still open after the v1.44/v1.45 audits:
+      - Mirrored frames carry no foot phase, and their root motion is only mirrored for motors
+        that call `ProcessRootMotion` (an Animator applying root motion itself is not). Keep
+        mirroring off until it is judged on a real rig.
+      - Crossfade mode still has two slots for three poses: an interrupted blend now loses the
+        lighter pose (at most half), not none. Inertialization, the default, has no such loss.
+      - Each jump creates and destroys an `AnimationClipPlayable` (native, not GC); a pool per
+        clip would remove it.
+      - Orientation warping (strafing hips/legs toward travel) and slope warping are not started.
 
 ## Tooling
 

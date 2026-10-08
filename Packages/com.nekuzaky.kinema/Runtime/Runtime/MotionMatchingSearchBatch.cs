@@ -38,7 +38,7 @@ namespace Kinema.MotionMatching
         private void OnEnable()
         {
             if (_controllers == null || _controllers.Length == 0)
-                _controllers = FindObjectsByType<MotionMatchingController>(FindObjectsSortMode.None);
+                _controllers = UnityCompat.FindAll<MotionMatchingController>();
             foreach (MotionMatchingController controller in _controllers)
                 if (controller != null) controller.SearchScheduler = this;
         }
@@ -78,9 +78,12 @@ namespace Kinema.MotionMatching
                 controller.SearchScheduler = null;
         }
 
+        private static readonly Unity.Profiling.ProfilerMarker CompleteMarker =
+            new Unity.Profiling.ProfilerMarker("Kinema.CompleteBatchedSearches");
+
         private void LateUpdate()
         {
-            CompletePendingSearches();
+            using (CompleteMarker.Auto()) CompletePendingSearches();
         }
 
         /// <summary>

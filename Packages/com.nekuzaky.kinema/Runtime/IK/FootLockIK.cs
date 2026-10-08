@@ -1,3 +1,4 @@
+using Unity.Profiling;
 using UnityEngine;
 
 namespace Kinema.MotionMatching
@@ -35,6 +36,8 @@ namespace Kinema.MotionMatching
             public bool Locked;
             public Vector3 LockPosition;
             public float Blend;      // 1 = fully corrected
+            // This contact already broke its lock once: stay unlocked until the foot lifts.
+            public bool Spent;
             public bool Valid;
         }
 
@@ -51,7 +54,14 @@ namespace Kinema.MotionMatching
             _controller = GetComponent<MotionMatchingController>();
         }
 
+        private static readonly ProfilerMarker SolveMarker = new ProfilerMarker("Kinema.FootLockIK");
+
         private void LateUpdate()
+        {
+            using (SolveMarker.Auto()) Solve();
+        }
+
+        private void Solve()
         {
             if (_weight <= 0f || _controller == null || !_controller.IsInitialized) return;
 
@@ -62,7 +72,9 @@ namespace Kinema.MotionMatching
 
             int frame = _controller.CurrentFrame;
             if (frame < 0 || frame >= db.FrameCount) return; // -1 before the first search resolves.
-            byte contacts = db.GetContacts(frame);
+            // The controller's contacts, not the frame's: during an event they are zero, where the
+            // frame index still names the last locomotion frame and its planted foot.
+            byte contacts = _controller.CurrentContacts;
             float dt = Time.deltaTime;
 
             for (int i = 0; i < _legs.Length; i++)
@@ -108,21 +120,38 @@ namespace Kinema.MotionMatching
 
             if (grounded)
             {
-                if (!leg.Locked)
+                if (!leg.Locked && !leg.Spent)
                 {
                     leg.Locked = true;
-                    leg.LockPosition = animatedFoot;
+                    if (leg.Blend > 0f)
+                    {
+                        // A contact starting while the last lock is still fading out: lock where the
+                        // foot is drawn right now, at full blend. Locking at the animated foot instead
+                        // yanked the target from the fading lock to the animation in one frame - up to
+                        // the 0.25 m break distance.
+                        leg.LockPosition = Vector3.Lerp(animatedFoot, leg.LockPosition, leg.Blend);
+                        leg.Blend = 1f;
+                    }
+                    else
+                    {
+                        leg.LockPosition = animatedFoot;
+                    }
                 }
                 // Keep the lock on the ground plane where the contact started.
-                if ((leg.LockPosition - animatedFoot).magnitude > _breakDistance)
+                if (leg.Locked && (leg.LockPosition - animatedFoot).magnitude > _breakDistance)
                 {
-                    leg.Locked = false; // too far: let it go rather than stretch the leg.
+                    // Too far: let it go rather than stretch the leg - and for the rest of this
+                    // contact. Re-locking on the next frame, while the release is still blending,
+                    // was a pop every 0.25 m whenever the body turned or slid over a planted foot.
+                    leg.Locked = false;
+                    leg.Spent = true;
                 }
                 leg.Blend = leg.Locked ? Mathf.MoveTowards(leg.Blend, 1f, dt / Mathf.Max(_releaseTime, 1e-3f)) : leg.Blend;
             }
             else
             {
                 leg.Locked = false;
+                leg.Spent = false;
             }
 
             if (!leg.Locked)

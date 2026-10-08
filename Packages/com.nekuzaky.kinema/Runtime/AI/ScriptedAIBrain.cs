@@ -47,7 +47,34 @@ namespace Kinema.MotionMatching
         [SerializeField, Min(0.5f)] private float _runDistance = 6f;
 
         public AIAgentCommand Command { get; private set; } = AIAgentCommand.Idle;
-        public string Status { get; private set; } = "idle";
+        /// <summary>
+        /// What the brain is doing, for the AI window. Built when read, not every tick: the moving
+        /// statuses carry a live distance, and formatting one per agent per frame was a steady
+        /// string allocation on every AI character for a label only the editor ever looks at.
+        /// </summary>
+        public string Status => _statusKind switch
+        {
+            StatusKind.Following => $"{Gait(_statusSpeed)} after the player ({_statusDistance:F0} m)",
+            StatusKind.MovingTo => $"{Gait(_statusSpeed)} ({_statusDistance:F0} m to go)",
+            _ => _statusText
+        };
+
+        private enum StatusKind { Text, Following, MovingTo }
+        private StatusKind _statusKind;
+        private string _statusText = "idle";
+        private float _statusSpeed, _statusDistance;
+
+        private const string RunningAfterPlayer = "running after the player";
+        private const string WalkingAfterPlayer = "walking after the player";
+
+        private void SetStatus(string text) { _statusKind = StatusKind.Text; _statusText = text; }
+
+        private void SetStatus(StatusKind kind, float speed, float distance)
+        {
+            _statusKind = kind;
+            _statusSpeed = speed;
+            _statusDistance = distance;
+        }
 
         #endregion
 
@@ -82,10 +109,11 @@ namespace Kinema.MotionMatching
                 if (context.Player != null)
                 {
                     float speed = SpeedFor(context.DistanceToPlayer);
-                    Command = AIAgentCommand.FollowTarget(context.Player, speed, Gait(speed) + " after the player");
-                    Status = $"{Gait(speed)} after the player ({context.DistanceToPlayer:F0} m)";
+                    Command = AIAgentCommand.FollowTarget(context.Player, speed,
+                        IsRunning(speed) ? RunningAfterPlayer : WalkingAfterPlayer);
+                    SetStatus(StatusKind.Following, speed, context.DistanceToPlayer);
                 }
-                else { Command = AIAgentCommand.Idle; Status = "no player to follow"; }
+                else { Command = AIAgentCommand.Idle; SetStatus("no player to follow"); }
                 return;
             }
 
@@ -97,14 +125,14 @@ namespace Kinema.MotionMatching
                 toGoal.y = 0f;
                 float speed = SpeedFor(toGoal.magnitude);
                 Command = AIAgentCommand.MoveTo(Command.Position, speed, Command.Reason);
-                Status = $"{Gait(speed)} ({toGoal.magnitude:F0} m to go)";
+                SetStatus(StatusKind.MovingTo, speed, toGoal.magnitude);
             }
 
             // Wander / Patrol: advance to the next goal once the current one is reached and the pause
             // has elapsed. The pause is what returns the agent to idle instead of pin-balling.
             if (context.ReachedGoal)
             {
-                if (_pauseUntil <= 0f) { _pauseUntil = Time.time + _pause; Status = "arrived, pausing"; }
+                if (_pauseUntil <= 0f) { _pauseUntil = Time.time + _pause; SetStatus("arrived, pausing"); }
                 else if (Time.time >= _pauseUntil) { _pauseUntil = 0f; Repick(context); }
             }
         }
@@ -117,7 +145,9 @@ namespace Kinema.MotionMatching
         private float SpeedFor(float distance) =>
             Mathf.Lerp(_walkScale, _runScale, Mathf.Clamp01(distance / _runDistance));
 
-        private string Gait(float speedScale) => speedScale > (_walkScale + _runScale) * 0.5f ? "running" : "walking";
+        private bool IsRunning(float speedScale) => speedScale > (_walkScale + _runScale) * 0.5f;
+
+        private string Gait(float speedScale) => IsRunning(speedScale) ? "running" : "walking";
 
         private void Repick(in AIContext context)
         {
@@ -128,7 +158,7 @@ namespace Kinema.MotionMatching
                 if (wp != null)
                 {
                     Command = AIAgentCommand.MoveTo(wp.position, _runScale,$"patrol to waypoint {_waypointIndex}");
-                    Status = $"patrolling to WP{_waypointIndex}";
+                    SetStatus($"patrolling to WP{_waypointIndex}");
                     return;
                 }
             }
@@ -137,7 +167,7 @@ namespace Kinema.MotionMatching
             Vector2 disc = Random.insideUnitCircle * _wanderRadius;
             Vector3 goal = _home + new Vector3(disc.x, 0f, disc.y);
             Command = AIAgentCommand.MoveTo(goal, _runScale,"wandering");
-            Status = "wandering";
+            SetStatus("wandering");
         }
 
         #endregion
