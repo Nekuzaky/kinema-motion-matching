@@ -1,6 +1,6 @@
 {
   "name": "com.nekuzaky.kinema",
-  "version": "1.44.0",
+  "version": "1.45.0",
   "displayName": "Kinema Motion Matching",
   "description": "Data-driven motion matching locomotion for Unity. Offline bake pipeline from AnimationClips, a normalized feature database with gait phase, a Burst-compiled weighted search, a PlayableGraph runtime, and an integrated editor window with live debug, in-window recording/ghost replay, one-click rig swap, and a search-performance benchmark.",
   "unity": "2021.3",

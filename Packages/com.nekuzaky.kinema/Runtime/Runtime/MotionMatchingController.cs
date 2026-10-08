@@ -1,3 +1,4 @@
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
@@ -130,6 +131,29 @@ namespace Kinema.MotionMatching
 
         [Header("Trajectory Prediction")]
         [SerializeField] private TrajectoryPredictionSettings _prediction = TrajectoryPredictionSettings.Default;
+
+        [Header("Root Motion Sync")]
+        // Holden, "Code vs Data Driven Displacement": root motion keeps the feet planted, a simulated
+        // character answers the stick. Nudging the first toward the second, by no more than a
+        // fraction of its own movement, gets most of both. Only acts on root motion passed through
+        // ProcessRootMotion (the sample CharacterMotor does) - an Animator applying root motion by
+        // itself is untouched.
+        [Tooltip("Nudge root motion passed through ProcessRootMotion toward a simulated character " +
+                 "that follows the input exactly. Responsiveness without sliding the feet more than " +
+                 "Sync Max Ratio allows.")]
+        [SerializeField] private bool _syncRootMotion = true;
+
+        [Tooltip("Half-life (seconds) of the gap between animation and simulation. Lower = the " +
+                 "character goes where it is told sooner.")]
+        [SerializeField, Range(0.02f, 1f)] private float _syncHalflife = 0.15f;
+
+        [Tooltip("Largest nudge, as a fraction of the animation's own movement that frame. 0 = pure " +
+                 "root motion; 0.5 = the feet slide by at most half of what they travel.")]
+        [SerializeField, Range(0f, 1f)] private float _syncMaxRatio = 0.4f;
+
+        [Tooltip("Furthest the simulation may run ahead of the character (meters). Keeps a character " +
+                 "held by a wall from being pulled into it for ever.")]
+        [SerializeField, Range(0.05f, 2f)] private float _syncMaxLead = 0.5f;
 
         [Header("Pose Query")]
         [Tooltip("Build the query's pose half from the skeleton actually rendered (after inertialization, stride warp and IK) instead of copying the current database frame. Honest pose costs; falls back to the frame copy when the schema's bones are missing on the rig.")]
@@ -319,6 +343,30 @@ namespace Kinema.MotionMatching
             set => _searchInterval = Mathf.Clamp(value, 0.02f, 2f);
         }
 
+        /// <summary>Where the simulated character is - the position root motion is nudged toward.</summary>
+        public Vector3 SimulatedPosition => _simPosition;
+
+        /// <summary>
+        /// Pass the root motion your motor consumes in <c>OnAnimatorMove</c> through here before
+        /// applying it: <paramref name="deltaPosition"/> as <c>Animator.deltaPosition</c> (world
+        /// space), <paramref name="deltaRotation"/> as <c>Animator.deltaRotation</c> (applied with
+        /// <c>transform.rotation *= deltaRotation</c>). It mirrors the step while a mirrored frame
+        /// plays - root motion leaves the graph unmirrored - and, with Sync Root Motion on, nudges
+        /// it toward the simulated character. Unchanged during events and clip overrides.
+        /// </summary>
+        public void ProcessRootMotion(ref Vector3 deltaPosition, ref Quaternion deltaRotation)
+        {
+            if (!_initialized) return;
+
+            if (_playingMirrored && _activeEvent == null)
+                LocomotionSimulation.Mirror(transform.rotation, ref deltaPosition, ref deltaRotation);
+
+            if (!_syncRootMotion || !_simulating || _lastTickDt <= 0f) return;
+
+            Vector3 toSimulation = _simPosition - (transform.position + deltaPosition);
+            deltaPosition = LocomotionSimulation.Adjust(deltaPosition, toSimulation, _syncHalflife, _syncMaxRatio, _lastTickDt);
+        }
+
         /// <summary>World-space desired horizontal velocity, used when no provider is attached.</summary>
         public Vector3 DesiredVelocity
         {
@@ -331,6 +379,12 @@ namespace Kinema.MotionMatching
         #region Private and Protected
 
         private const int SlotCount = 2;
+
+        // What a frame of Kinema costs, by stage, in the Unity Profiler (and in a build's profiler
+        // capture): a budget nobody can see is a budget nobody keeps.
+        private static readonly ProfilerMarker TickMarker = new ProfilerMarker("Kinema.Tick");
+        private static readonly ProfilerMarker SearchMarker = new ProfilerMarker("Kinema.Search");
+        private static readonly ProfilerMarker EvaluateMarker = new ProfilerMarker("Kinema.EvaluateGraph");
 
         private ILocomotionProvider _locomotion;
         private MotionMatcher _matcher;
@@ -353,6 +407,12 @@ namespace Kinema.MotionMatching
         private float _eventClipLength;
 
         private SearchSnapshotRecorder _snapshots;
+
+        // Every database clip's AnimationEvents, read once. The clip.events getter builds a fresh
+        // array (and a fresh AnimationEvent per event) on every call; reading it per frame was the
+        // runtime's one steady per-frame allocation, on every character.
+        private AnimationEvent[][] _clipEvents;
+        private bool _anyClipEvents;
 
         // Coverage telemetry: which frames the matcher actually reaches for.
         private int[] _frameUsage;
@@ -393,6 +453,10 @@ namespace Kinema.MotionMatching
 
         private Vector3 _previousPosition;
         private float _lastTickDt;
+
+        // The simulated character root motion is synced toward (see ProcessRootMotion).
+        private Vector3 _simPosition, _simVelocity, _simAcceleration;
+        private bool _simulating;
         // The controller's own clock: the trajectory history is keyed by it, so several Manual Steps
         // inside one frame still record distinct, correctly spaced samples (Time.time would not move).
         private float _simTime;
@@ -523,6 +587,7 @@ namespace Kinema.MotionMatching
             _history = new TrajectoryHistory(128);
             _snapshots = new SearchSnapshotRecorder(240, FeatureGroupExtensions.Count, _database.Schema.TrajectoryPointCount);
             _frameUsage = new int[_database.FrameCount];
+            CacheClipEvents();
             _totalSearches = 0; _totalJumps = 0; _costSum = 0f;
             _blendingSeconds = 0f; _liveSeconds = 0f;
             _debug.DesiredTrajectory = _desiredTrajectory;
@@ -533,6 +598,7 @@ namespace Kinema.MotionMatching
 
             _previousPosition = transform.position;
             _lastTickDt = 0f;
+            ResetSimulation();
             _inertialBlendRemaining = 0f;
             _searchTimer = 0f;
             _initialized = true;
@@ -633,6 +699,11 @@ namespace Kinema.MotionMatching
 
         private void Tick(float dt)
         {
+            using (TickMarker.Auto()) TickCore(dt);
+        }
+
+        private void TickCore(float dt)
+        {
             // How fast the root actually moved over the LAST tick: the displacement since then is
             // that tick's root motion, so it divides by that tick's dt. Dividing by this one made the
             // measurement swing with every frame-time wobble (+-20% frame time read as +-0.6 m/s at a
@@ -681,6 +752,7 @@ namespace Kinema.MotionMatching
                 }
             }
 
+            UpdateSimulation(dt);
             UpdateStrideWarp(dt);
             AdvanceClocks(dt);
 
@@ -691,13 +763,43 @@ namespace Kinema.MotionMatching
             UpdateBlend(dt);
             UpdateOverlay(dt);
             ApplySlotTimes();
-            _graph.Evaluate(dt);
+            using (EvaluateMarker.Auto()) _graph.Evaluate(dt);
 
             // Sample the pose here - straight out of the graph, BEFORE the LateUpdate IK passes
             // touch it. Sampling after IK poisoned the query: feet moved by foot lock and ground
             // adaptation resemble no baked frame, so every search found something "better" and the
             // pose flickered in a feedback loop (jump -> blend -> stranger pose -> jump).
             if (_livePoseQuery && _queryBonesValid && dt > 0f) SampleQueryBones(dt);
+        }
+
+        /// <summary>
+        /// Advances the simulated character toward the desired velocity on the same spring the
+        /// trajectory prediction uses, so the character is pulled along the path it searched for.
+        /// While something else owns the root (an event, a clip override) the simulation simply
+        /// rides with the character, so it resumes from where the character actually is.
+        /// </summary>
+        private void UpdateSimulation(float dt)
+        {
+            bool active = _syncRootMotion && !_clipOverride && _activeEvent == null;
+            if (!active || !_simulating)
+            {
+                ResetSimulation();
+                _simulating = active;
+                return;
+            }
+
+            Vector3 desired = _locomotion != null ? _locomotion.DesiredVelocity : _desiredVelocity;
+            desired.y = 0f;
+            LocomotionSimulation.Step(ref _simPosition, ref _simVelocity, ref _simAcceleration,
+                                      desired, _prediction.PositionResponse, dt);
+            _simPosition = LocomotionSimulation.Leash(_simPosition, transform.position, _syncMaxLead);
+        }
+
+        private void ResetSimulation()
+        {
+            _simPosition = transform.position;
+            _simVelocity = new Vector3(_measuredVelocity.x, 0f, _measuredVelocity.z);
+            _simAcceleration = Vector3.zero;
         }
 
         /// <summary>Warps the root toward the event target until contact, then ends the event at clip end.</summary>
@@ -807,10 +909,10 @@ namespace Kinema.MotionMatching
         /// </summary>
         private void RelayAnimationEvents(int clipIndex, float from, float to)
         {
+            if (!_anyClipEvents || _clipEvents == null || clipIndex >= _clipEvents.Length) return;
+            AnimationEvent[] events = _clipEvents[clipIndex];
+            if (events.Length == 0) return;
             AnimationClip clip = _database.GetClip(clipIndex).Clip;
-            if (clip == null) return;
-            AnimationEvent[] events = clip.events;
-            if (events == null || events.Length == 0) return;
 
             // The slot clock is monotonic; map to clip-local time before matching event times.
             float fromLocal = LocalClipTime(clipIndex, from);
@@ -824,6 +926,19 @@ namespace Kinema.MotionMatching
             {
                 DispatchEventsInRange(events, fromLocal, clip.length + 1e-4f);
                 DispatchEventsInRange(events, -1e-4f, toLocal);
+            }
+        }
+
+        private void CacheClipEvents()
+        {
+            _clipEvents = new AnimationEvent[_database.ClipCount][];
+            _anyClipEvents = false;
+            for (int c = 0; c < _clipEvents.Length; c++)
+            {
+                AnimationClip clip = _database.GetClip(c).Clip;
+                AnimationEvent[] events = clip != null ? clip.events : null;
+                _clipEvents[c] = events != null && events.Length > 0 ? events : System.Array.Empty<AnimationEvent>();
+                _anyClipEvents |= _clipEvents[c].Length > 0;
             }
         }
 
@@ -910,6 +1025,11 @@ namespace Kinema.MotionMatching
         }
 
         private void RunSearch()
+        {
+            using (SearchMarker.Auto()) RunSearchCore();
+        }
+
+        private void RunSearchCore()
         {
             PrepareSearchQuery();
 
@@ -1036,9 +1156,12 @@ namespace Kinema.MotionMatching
             // Every missing bone, in one message. Reporting the first and returning means fixing the
             // rig one name per play session, and each of those is a full diagnostic round trip.
             System.Collections.Generic.List<string> missing = null;
+            // One walk of the hierarchy for every bone, not one per bone: this runs on every
+            // Initialize - enable, SwitchDatabase, a ghost spawning mid-game.
+            Transform[] hierarchy = count > 0 ? transform.GetComponentsInChildren<Transform>(true) : null;
             for (int b = 0; b < count; b++)
             {
-                _queryBones[b] = FindDeepChild(transform, names[b]);
+                _queryBones[b] = FindByName(hierarchy, names[b]);
                 if (_queryBones[b] != null) continue;
 
                 _queryBonesValid = false;
@@ -1071,11 +1194,11 @@ namespace Kinema.MotionMatching
             _queryBonesPrimed = true;
         }
 
-        private static Transform FindDeepChild(Transform root, string boneName)
+        private static Transform FindByName(Transform[] hierarchy, string boneName)
         {
-            if (string.IsNullOrEmpty(boneName)) return null;
-            foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
-                if (t.name == boneName) return t;
+            if (hierarchy == null || string.IsNullOrEmpty(boneName)) return null;
+            for (int i = 0; i < hierarchy.Length; i++)
+                if (hierarchy[i].name == boneName) return hierarchy[i];
             return null;
         }
 
@@ -1146,6 +1269,14 @@ namespace Kinema.MotionMatching
             _mirror?.SetMirrored(_playingMirrored);
 
             int newSlot = 1 - _activeSlot;
+
+            // Crossfade with a blend still running: two slots, three poses. Whichever slot the new
+            // clip takes, that slot's pose vanishes at its current weight - so take the lighter one.
+            // Always taking the outgoing slot cut away a pose still weighted up to 100% the moment a
+            // blend was interrupted early, and popped by all of it.
+            if (_transitionMode == TransitionMode.Crossfade && _blending && _mixer.GetInputWeight(_activeSlot) < 0.5f)
+                newSlot = _activeSlot;
+
             SetSlotClip(newSlot, clip.Clip, frame.ClipIndex, frame.Time);
 
             _activeSlot = newSlot;

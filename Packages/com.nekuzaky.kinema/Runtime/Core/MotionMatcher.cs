@@ -15,7 +15,11 @@ namespace Kinema.MotionMatching
         public int FrameIndex;
         public float TotalCost;
 
-        /// <summary>Cost contribution of each <see cref="FeatureGroup"/> for the winning frame.</summary>
+        /// <summary>
+        /// Cost contribution of each <see cref="FeatureGroup"/> for the winning frame. Owned by the
+        /// matcher that produced the result and rewritten by its next search - copy it to keep it.
+        /// (A fresh array per search was the matcher's only steady allocation.)
+        /// </summary>
         public float[] GroupCosts;
 
         public float TrajectoryCost => GroupCosts[(int)FeatureGroup.TrajectoryPosition]
@@ -64,6 +68,7 @@ namespace Kinema.MotionMatching
         private NativeArray<byte> _nativeSearchable;
         private bool _hasExclusions;
         private float _phaseWeight;
+        private readonly float[] _groupCosts = new float[FeatureGroupExtensions.Count];
         private NativeArray<float> _chunkBestCost;
         private NativeArray<int> _chunkBestFrame;
         private readonly int _chunkCount;
@@ -145,7 +150,9 @@ namespace Kinema.MotionMatching
         /// <summary>Rebuilds the cached per-dimension weight table. Call when weights change.</summary>
         public void UpdateWeights(FeatureWeights weights)
         {
-            _perDimensionWeights = _database.Schema.BuildPerDimensionWeights(weights);
+            if (_perDimensionWeights == null || _perDimensionWeights.Length != _database.Dimension)
+                _perDimensionWeights = new float[_database.Dimension];
+            _database.Schema.BuildPerDimensionWeights(weights, _perDimensionWeights);
             _nativeWeights.CopyFrom(_perDimensionWeights);
             _phaseWeight = weights.FootPhase;
             _kdTree?.Invalidate(); // metric changed: the scaled tree is stale.
@@ -399,7 +406,8 @@ namespace Kinema.MotionMatching
 
         private MotionMatchResult BuildResult(MotionMatchingQuery query, int frameIndex, float totalCost)
         {
-            var groupCosts = new float[FeatureGroupExtensions.Count];
+            float[] groupCosts = _groupCosts;
+            System.Array.Clear(groupCosts, 0, groupCosts.Length);
             if (frameIndex < 0)
                 return new MotionMatchResult { FrameIndex = -1, TotalCost = 0f, GroupCosts = groupCosts };
 

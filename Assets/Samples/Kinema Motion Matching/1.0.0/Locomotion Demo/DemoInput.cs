@@ -36,12 +36,27 @@ namespace Kinema.MotionMatching.Samples
 #endif
         }
 
-        /// <summary>Right stick, or the mouse while its middle button is held.</summary>
-        public static DemoVector Orbit()
+        /// <summary>Camera orbit from the right stick: a rate, in [-1, 1] per axis.</summary>
+        public static DemoVector OrbitStick()
         {
 #if KINEMA_INPUT_SYSTEM
-            var action = new InputAction("Orbit", InputActionType.Value);
+            var action = new InputAction("OrbitStick", InputActionType.Value);
             action.AddBinding("<Gamepad>/rightStick");
+            return new DemoVector(action);
+#else
+            return new DemoVector(() => Vector2.zero); // the default Input Manager maps no right stick.
+#endif
+        }
+
+        /// <summary>
+        /// Camera orbit from the mouse while its middle button is held: a distance, in pixels moved
+        /// this frame. Kept apart from the stick because the two scale differently - a rate times
+        /// the frame time is an angle, a pixel delta already is one.
+        /// </summary>
+        public static DemoVector OrbitMouse()
+        {
+#if KINEMA_INPUT_SYSTEM
+            var action = new InputAction("OrbitMouse", InputActionType.Value);
             // Mouse delta only while the middle button is held, so plain mouse movement stays free.
             action.AddCompositeBinding("OneModifier")
                 .With("Modifier", "<Mouse>/middleButton")

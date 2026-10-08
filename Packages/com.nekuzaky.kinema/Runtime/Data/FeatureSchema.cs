@@ -129,6 +129,17 @@ namespace Kinema.MotionMatching
         public float[] BuildPerDimensionWeights(FeatureWeights weights)
         {
             var result = new float[Dimension];
+            BuildPerDimensionWeights(weights, result);
+            return result;
+        }
+
+        /// <summary>
+        /// <see cref="BuildPerDimensionWeights(FeatureWeights)"/> into an existing array of length
+        /// <see cref="Dimension"/>, so a live weight change (tuning, a calibration profile) allocates
+        /// nothing.
+        /// </summary>
+        public void BuildPerDimensionWeights(FeatureWeights weights, float[] result)
+        {
             for (int gi = 0; gi < FeatureGroupExtensions.Count; gi++)
             {
                 var group = (FeatureGroup)gi;
@@ -141,7 +152,6 @@ namespace Kinema.MotionMatching
                 for (int i = 0; i < length; i++)
                     result[offset + i] = perBone ? w * GetBoneWeight(i / 3) : w;
             }
-            return result;
         }
 
         /// <summary>Per-bone multiplier; missing entries default to 1.</summary>

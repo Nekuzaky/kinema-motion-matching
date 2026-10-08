@@ -1,3 +1,4 @@
+using Unity.Profiling;
 using UnityEngine;
 
 namespace Kinema.MotionMatching
@@ -53,7 +54,14 @@ namespace Kinema.MotionMatching
             _controller = GetComponent<MotionMatchingController>();
         }
 
+        private static readonly ProfilerMarker SolveMarker = new ProfilerMarker("Kinema.FootLockIK");
+
         private void LateUpdate()
+        {
+            using (SolveMarker.Auto()) Solve();
+        }
+
+        private void Solve()
         {
             if (_weight <= 0f || _controller == null || !_controller.IsInitialized) return;
 

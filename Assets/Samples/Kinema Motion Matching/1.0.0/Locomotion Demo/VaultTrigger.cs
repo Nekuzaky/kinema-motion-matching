@@ -82,8 +82,9 @@ namespace Kinema.MotionMatching.Samples
 
                 if (autoTriggered || _vaultAction.WasPressedThisFrame())
                 {
-                    KinemaLog.Event($"{name}: vault over '{(ahead.Collider != null ? ahead.Collider.name : "?")}' " +
-                                    $"(top {ahead.Height:F2} m, {ahead.Depth:F2} m thick)", this);
+                    if (KinemaLog.Verbose)
+                        KinemaLog.Event($"{name}: vault over '{(ahead.Collider != null ? ahead.Collider.name : "?")}' " +
+                                        $"(top {ahead.Height:F2} m, {ahead.Depth:F2} m thick)", this);
                     Vault(ahead);
                 }
                 return;
@@ -98,7 +99,8 @@ namespace Kinema.MotionMatching.Samples
                 if (jump == null) jump = moving ? _jumpIdleEvent : _jumpMovingEvent;
                 if (jump != null)
                 {
-                    KinemaLog.Event($"{name}: free jump ({(moving ? "moving" : "standing")}) with '{jump.name}'", this);
+                    if (KinemaLog.Verbose)
+                        KinemaLog.Event($"{name}: free jump ({(moving ? "moving" : "standing")}) with '{jump.name}'", this);
                     _controller.PlayEvent(jump, transform.position, Quaternion.LookRotation(Flatten(transform.forward), Vector3.up));
                 }
                 else

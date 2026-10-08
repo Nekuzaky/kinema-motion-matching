@@ -26,6 +26,9 @@ namespace Kinema.MotionMatching.Samples
         [SerializeField, Min(1f)] private float _distance = 6.7f;
         [SerializeField, Range(-30f, 75f)] private float _pitch = 24f;
         [SerializeField, Min(10f)] private float _orbitSpeed = 140f;
+
+        [Tooltip("Degrees of orbit per pixel of middle-mouse drag.")]
+        [SerializeField, Min(0.01f)] private float _mouseSensitivity = 0.25f;
         [SerializeField, Range(-25f, 70f)] private float _minPitch = -5f;
         [SerializeField, Range(-25f, 80f)] private float _maxPitch = 65f;
 
@@ -35,7 +38,8 @@ namespace Kinema.MotionMatching.Samples
 
         #region Private and Protected
 
-        private DemoVector _orbitAction;
+        private DemoVector _orbitStick;
+        private DemoVector _orbitMouse;
         private float _yaw;
         private Vector3 _focus;
         private bool _focusPrimed;
@@ -47,11 +51,12 @@ namespace Kinema.MotionMatching.Samples
         private void Awake()
         {
             // Right stick, or mouse delta while the middle button is held (plain mouse movement stays free).
-            _orbitAction = DemoInput.Orbit();
+            _orbitStick = DemoInput.OrbitStick();
+            _orbitMouse = DemoInput.OrbitMouse();
         }
 
-        private void OnEnable() => _orbitAction.Enable();
-        private void OnDisable() => _orbitAction.Disable();
+        private void OnEnable() { _orbitStick.Enable(); _orbitMouse.Enable(); }
+        private void OnDisable() { _orbitStick.Disable(); _orbitMouse.Disable(); }
 
         private void Start()
         {
@@ -68,13 +73,15 @@ namespace Kinema.MotionMatching.Samples
         {
             if (_target == null) return;
 
-            Vector2 orbit = _orbitAction.ReadValue();
-            // Mouse deltas arrive in pixels, sticks in [-1,1]; the clamp keeps a fast mouse from spinning the rig.
-            orbit.x = Mathf.Clamp(orbit.x, -1.5f, 1.5f);
-            orbit.y = Mathf.Clamp(orbit.y, -1.5f, 1.5f);
-
-            _yaw += orbit.x * _orbitSpeed * Time.deltaTime;
-            _pitch = Mathf.Clamp(_pitch - orbit.y * _orbitSpeed * 0.6f * Time.deltaTime, _minPitch, _maxPitch);
+            // A stick is a rate (times the frame time, an angle); a mouse delta is already a distance.
+            // Both used to go through the rate path, clamped: the mouse turned the camera less per
+            // pixel the higher the frame rate, and saturated on any brisk drag.
+            Vector2 stick = _orbitStick.ReadValue();
+            Vector2 mouse = _orbitMouse.ReadValue();
+            float dt = Time.deltaTime;
+            _yaw += stick.x * _orbitSpeed * dt + mouse.x * _mouseSensitivity;
+            _pitch = Mathf.Clamp(_pitch - stick.y * _orbitSpeed * 0.6f * dt - mouse.y * _mouseSensitivity * 0.6f,
+                                 _minPitch, _maxPitch);
 
             // Aim at a focus point that follows the root exactly across the ground but eases in
             // height. Position was already smoothed; the aim was not - LookAt took the raw root, so

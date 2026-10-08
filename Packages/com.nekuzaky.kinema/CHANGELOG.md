@@ -4,6 +4,52 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] - 2026-10-08
+
+Production-grade runtime: the techniques AAA motion matching ships with, built the way a
+production needs them - measurable, allocation-free, responsive without sliding.
+
+### Added
+- **Simulation/animation sync** (Holden, *Code vs Data Driven Displacement*). The controller runs a
+  simulated character toward the desired velocity on the same critically damped spring the
+  trajectory prediction uses - the character is pulled along exactly the path it searched for - and
+  `ProcessRootMotion(ref deltaPosition, ref deltaRotation)` nudges root motion toward it by at most
+  `Sync Max Ratio` of the animation's own movement. A standing animation is never dragged; a moving
+  one slides by at most that fraction. Leashed to the character so a wall cannot pull it on for ever.
+  On by default for motors that call `ProcessRootMotion` (the sample `CharacterMotor` does); an
+  Animator applying root motion by itself is untouched. Maths in `LocomotionSimulation`, unit tested
+  (frame-rate independence, agreement with the predicted trajectory, the ratio bound).
+- Unity Profiler markers: `Kinema.Tick`, `Kinema.Search`, `Kinema.EvaluateGraph`,
+  `Kinema.FootLockIK`, `Kinema.GroundAdaptationIK`, `Kinema.CompleteBatchedSearches`.
+- `AllocationPlayModeTests`: a ticking character - searches, jumps and transitions included -
+  allocates nothing on the managed heap.
+
+### Fixed
+- **Per-frame allocations removed** (each one a GC stall waiting to happen, multiplied by the
+  number of characters): `AnimationClip.events` was read every frame on every character (the getter
+  builds a fresh array each call) - now cached per clip at initialization; every search allocated its
+  group-cost array - now owned by the matcher (`MotionMatchResult.GroupCosts` is valid until that
+  matcher's next search; copy it to keep it); `ScriptedAIBrain` formatted status strings every frame
+  for a label only the editor reads - now built when read; log messages were formatted with logging
+  off. Weight changes no longer allocate, and bone lookup walks the hierarchy once instead of once per
+  bone.
+- **Mirrored frames played unmirrored root motion** for motors using `ProcessRootMotion`: the step
+  is now reflected across the character's own side.
+- **AI agents flickered between idle and walk on arrival** - the eased speed ran down to nothing the
+  data could play - and an agent parked just outside its arrive radius stood there for good. Speed
+  now floors at `Min Move Speed`, and arrival has hysteresis (`Rearm Distance`).
+- **AI avoidance wobbled into walls** when both feelers read alike: the avoidance side is now kept
+  while the way stays blocked, and the slow-down is smoothed like the steer.
+- **Crossfade interruption popped** by up to the whole outgoing pose; the new clip now takes the
+  lighter of the two slots.
+- Demo camera: mouse orbit no longer depends on frame rate (a pixel delta is an angle, a stick is a
+  rate), and no longer saturates on a brisk drag.
+
+### Notes
+- Verified outside Unity: everything compiles against the Unity 2021 API; the new EditMode tests
+  pass against a pure-managed stand-in for Unity's math. The allocation test and the feel of the sync
+  have not been run in Unity here.
+
 ## [1.44.0] - 2026-10-08
 
 Smoothness, and every LTS from 2021.3. Two audits of the runtime against "it still isn't fluid"

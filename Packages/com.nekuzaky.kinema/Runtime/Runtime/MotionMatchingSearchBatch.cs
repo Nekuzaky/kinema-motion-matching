@@ -78,9 +78,12 @@ namespace Kinema.MotionMatching
                 controller.SearchScheduler = null;
         }
 
+        private static readonly Unity.Profiling.ProfilerMarker CompleteMarker =
+            new Unity.Profiling.ProfilerMarker("Kinema.CompleteBatchedSearches");
+
         private void LateUpdate()
         {
-            CompletePendingSearches();
+            using (CompleteMarker.Auto()) CompletePendingSearches();
         }
 
         /// <summary>

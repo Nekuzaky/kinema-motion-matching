@@ -30,6 +30,7 @@ Follow development and updates on [X/Twitter](https://twitter.com/nekuzaky), [Bl
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
+- [Production readiness](#production-readiness)
 - [Working with AI coding assistants](#working-with-ai-coding-assistants)
 - [Repository layout](#repository-layout)
 - [Testing](#testing)
@@ -67,6 +68,12 @@ measurements; see the benchmark). Built on `MotionMatcher.ScheduleSearch`/`Compl
 - Blend spaces (MxM-style): place source clips on a 2D plane and bake a grid of blended clips from
 them (Bake tab), filling the gaps between the motions you actually captured. The blend runs in pose
 space and produces real AnimationClips, so a grid point is playable, not just matchable.
+- Simulation/animation sync (Holden's "code vs data driven displacement"): a simulated character
+follows the input exactly on the same spring the trajectory prediction uses, and root motion passed
+through `ProcessRootMotion` is nudged toward it by at most a set fraction of its own movement -
+responsive like a simulated controller, feet bounded like pure root motion.
+- Zero managed allocation per frame on the runtime path, and Unity Profiler markers (`Kinema.Tick`,
+`Kinema.Search`, `Kinema.EvaluateGraph`, the IK passes) for the frame budget.
 - Manual ticking: set `TickMode.Manual` and call `Step(dt)` to own the clock - fixed-step or
 server-authoritative simulation, and deterministic tests. Automatic (self-ticking) is the default.
 
@@ -171,6 +178,31 @@ distance over these vectors, evaluated by the query's predicted future trajector
 sampled off the rendered skeleton. The controller only cuts to a new frame when it clearly beats
 continuing the current clip, then crossfades or inertializes. See
 [the documentation](Packages/com.nekuzaky.kinema/Documentation~/index.md) for detail.
+
+## Production readiness
+
+"AAA" is a result, not a feature list: a production mocap set, animators tuning it, and shipped
+hours of play. What a toolkit can do is carry the techniques AAA motion matching runs on, built
+the way a production needs them. Where Kinema stands:
+
+| | Status |
+| --- | --- |
+| Inertialized transitions, position- and velocity-continuous (Bollo 2018) | Yes - unit tested |
+| Simulation/animation sync: responsive like a simulated character, feet bounded like root motion (Holden 2021) | Yes - unit tested |
+| Burst search, cross-character batching, search LOD | Yes - benchmarked |
+| Zero managed allocation per frame | Yes - guarded by a PlayMode test |
+| Profiler markers on every stage (`Kinema.*`) | Yes |
+| Foot locking, ground adaptation, stride warping, events with root warping, tags | Yes |
+| Looping clips baked as cycles, clip ends excluded from search | Yes - unit tested |
+| Mirroring | Experimental - root motion mirrored for motors using `ProcessRootMotion` |
+| Learned Motion Matching runtime | Not yet - training pipeline only |
+| Orientation / slope warping | Not yet |
+| Production mocap dance card, judged on screen | **Yours** - the demo ships procedural or third-party clips |
+| Console / mobile builds, network replication | Unverified |
+
+Nothing in that table was judged in a play session by this repository's CI: the tests prove the
+maths and the runtime loop, not how the motion reads. That last step is a person with a capture set
+and an afternoon.
 
 ## Working with AI coding assistants
 
